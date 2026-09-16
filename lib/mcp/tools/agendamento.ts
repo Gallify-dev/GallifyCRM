@@ -434,6 +434,16 @@ const marcarShape = {
   owner_user_id: z.string().uuid().optional(),
   title: z.string().min(1).max(200).optional(),
   notes: z.string().max(2000).optional(),
+  // Convidado do Google Calendar/Meet. Sem isto o sync sobe o evento sem attendees
+  // e o lead só recebe o link pelo WhatsApp. Peça o e-mail antes de marcar Meet.
+  guest_email: z
+    .string()
+    .email()
+    .max(320)
+    .optional()
+    .describe(
+      "e-mail do convidado no Google Calendar/Meet. Peça antes de marcar atendimento com Meet; sem ele o evento sobe sem convite por e-mail.",
+    ),
 };
 
 export const crmBookAppointment: McpToolDefinition<typeof marcarShape> = {
@@ -441,7 +451,7 @@ export const crmBookAppointment: McpToolDefinition<typeof marcarShape> = {
   description:
     "Marca um compromisso com HORA COMBINADA entre o cliente e um atendente — consulta, sessão, " +
     "visita, reunião. Use quando o cliente ESCOLHEU um horário e vai comparecer: isto reserva o " +
-    "tempo de uma pessoa da equipe, e o cliente conta com ele. No atendimento atual, marcar Google Meet também agenda a entrega do link nesta conversa quando ficar pronto. " +
+    "tempo de uma pessoa da equipe, e o cliente conta com ele. No atendimento atual, marcar Google Meet também agenda a entrega do link nesta conversa quando ficar pronto. Se o atendimento for Meet, peça o e-mail do convidado e passe em `guest_email` — sem isso o Google sobe o evento sem convite. " +
     "NÃO use para 'voltar a falar com o cliente depois' — isso é retorno, e a ferramenta é " +
     "`crm_schedule_followup`. A diferença: aqui as DUAS partes combinaram e alguém vai esperar; " +
     "lá é decisão interna nossa e o cliente não sabe de nada. " +
@@ -474,6 +484,7 @@ export const crmBookAppointment: McpToolDefinition<typeof marcarShape> = {
           ...(input.owner_user_id ? { owner_user_id: input.owner_user_id } : {}),
           ...(input.title ? { title: input.title } : {}),
           ...(input.notes ? { notes: input.notes } : {}),
+          ...(input.guest_email ? { guest_email: input.guest_email } : {}),
         },
       );
       /**
