@@ -204,13 +204,16 @@ export const crmFindFreeSlots: McpToolDefinition<typeof horariosLivresShape> = {
   requiresRole: "agent",
   requiresScope: "mcp:read",
   handler: async (input, ctx) => {
+    // STRIP_OWNER_FIND_FREE_HANDLER: uuid inventado em owner_user_id esvazia a agenda.
+    const inputSemOwner = { ...input, owner_user_id: undefined };
+    input = inputSemOwner as typeof input;
     const agora = new Date();
+    // PREFER_DIA_OVER_DIAS: LLM manda os dois; nunca perguntar ao lead — drop dias_a_frente.
     if (input.dia !== undefined && input.dias_a_frente !== undefined) {
-      return {
-        horarios: [],
-        motivo: "periodo_ambiguo",
-        mensagem: "informe um dia específico ou quantos dias olhar, não os dois.",
+      const { dias_a_frente: _drop, ...rest } = input as typeof input & {
+        dias_a_frente?: number;
       };
+      input = rest as typeof input;
     }
 
     // A faixa larga contém o dia civil em QUALQUER fuso. Depois de a coleta

@@ -481,6 +481,22 @@ const AGENDA_CONFIRMED_PATTERN =
  * texto já normalizado, e os demais grupos ([aá]/[oa]/[çc][aã]) seguem funcionando
  * porque não são o ÚLTIMO caractere antes de um `\b`.
  */
+
+/** Oferece HH:MM concreto sem ter chamado find_free neste turno. */
+const AGENDA_INVENTED_SLOT_PATTERN =
+  /\b(?:tenho|hor[aá]rios?|às|as)\b[^.!?]{0,60}\d{1,2}:\d{2}\b/i;
+
+/** Pede licença pra mostrar horário / marcar — mesmo defeito de stall. */
+const AGENDA_PERMISSION_PATTERN =
+  /\b(posso|pode|poderia|permite|autoriza)\b[^.!?\n]{0,40}\b(passar|mostrar|ver|te passar|te mostrar|marcar|agendar|reservar)\b/i;
+
+/** Pede dia/turno ANTES de consultar a agenda. */
+const AGENDA_ASK_DAY_PATTERN =
+  /\b(me (passa|fala|diz)|qual|que dia|prefer[eê]ncia|sua prefer[eê]ncia|dia da sua|me passa s[oó] um dia)\b[^.!?\n]{0,80}\b(dia|data|manh[aã]|tarde|noite|hor[aá]rios?)\b/i;
+
+const AGENDA_ASK_DAY_LOOSE_PATTERN =
+  /\b(dia da sua prefer[eê]ncia|sua prefer[eê]ncia|me (passa|fala|diz) s[oó]? ?um dia|me diz um dia|confirma se quer|me confirma se quer|que dia (funciona|fica|prefere)|manh[aã] ou tarde|s[oó] me confirma)\b/i;
+
 function semAcento(texto: string): string {
   return texto.normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
@@ -508,8 +524,45 @@ export const agendaStallGate: Gate = {
   name: 'agenda_stall',
   evaluate: (ctx) => {
     if (ctx.agenda === undefined || !ctx.agenda.active) return { pass: true };
+    const bodyEarly = semAcento(ctx.body);
+    const ferramentas = ctx.agenda.podeMarcar
+      ? 'crm_find_free_slots, crm_book_appointment ou crm_reschedule_appointment'
+      : 'crm_find_free_slots';
+
+    // Pedir permissão / pedir dia: veta mesmo se uma tool já rodou (find_free vazio).
+    if (AGENDA_PERMISSION_PATTERN.test(bodyEarly)) {
+      return {
+        pass: false,
+        code: 'agenda_stall_sem_ferramenta',
+        reason:
+          'Não peça permissão para mostrar horários ou marcar. Chame ' +
+          `${ferramentas} e responda já com 2 horários concretos do retorno ` +
+          '(campo quando) ou confirme o book — sem "posso te passar" / "posso marcar".',
+      };
+    }
+    if (AGENDA_ASK_DAY_PATTERN.test(bodyEarly) || AGENDA_ASK_DAY_LOOSE_PATTERN.test(bodyEarly)) {
+      return {
+        pass: false,
+        code: 'agenda_stall_sem_ferramenta',
+        reason:
+          'Não peça dia/manhã/tarde ao lead antes de consultar a agenda. Chame ' +
+          `${ferramentas} agora e ofereça 2 horários concretos do campo quando.`,
+      };
+    }
+
     if (ctx.agenda.toolCalledThisTurn) return { pass: true };
-    const bodySemAcento = semAcento(ctx.body);
+
+    if (AGENDA_INVENTED_SLOT_PATTERN.test(bodyEarly)) {
+      return {
+        pass: false,
+        code: 'agenda_stall_sem_ferramenta',
+        reason:
+          'Você ofereceu horário concreto sem chamar ' +
+          `${ferramentas} neste turno. Chame crm_find_free_slots e use só os horários do campo quando.`,
+      };
+    }
+
+    const bodySemAcento = bodyEarly;
     const stall = AGENDA_STALL_PATTERN.test(bodySemAcento);
     const confirmedSemChecar = AGENDA_CONFIRMED_PATTERN.test(bodySemAcento);
     if (!stall && !confirmedSemChecar) return { pass: true };

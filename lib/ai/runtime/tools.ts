@@ -81,9 +81,23 @@ function wrapMcpTool(
       // O catálogo tem 28 campos de uuid que aceitam ausência, e todos vazavam
       // a mesma sentinela. Consertar por handler seria consertar por instância:
       // o 29º nasceria fora. Ver `lib/mcp/uuid-de-aterro.ts`.
+      // STRIP_OWNER_FIND_FREE: uuid "válido" alucinado em owner_user_id filtra
+      // dono inexistente e esvazia a agenda (não é aterro NIL/MAX). Em find_free
+      // o default_owner do event type basta — omita sempre o que o modelo mandar.
+      let argsEntrada = (args ?? {}) as Record<string, unknown>;
+      if (
+        (def.name === "crm_find_free_slots" || def.name === "crm_list_appointments") &&
+        Object.prototype.hasOwnProperty.call(argsEntrada, "owner_user_id")
+      ) {
+        const { owner_user_id: _omitido, ...rest } = argsEntrada;
+        argsEntrada = rest;
+        logger.info("owner_user_id omitido na borda (find_free/list)", {
+          tool: def.name,
+        });
+      }
       const higiene = higienizarUuidsDeAterro(
         def.inputSchema as Record<string, z.ZodTypeAny>,
-        (args ?? {}) as Record<string, unknown>,
+        argsEntrada,
       );
       const argsRecord = higiene.limpos;
       if (higiene.descartados.length > 0) {
