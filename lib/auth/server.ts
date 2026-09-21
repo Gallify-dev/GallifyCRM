@@ -32,6 +32,7 @@ interface RawMembershipRow {
 interface OrgJoin {
   display_name: string;
   locale: string | null;
+  parent_organization_id?: string | null;
 }
 
 /**
@@ -166,7 +167,7 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
       supabase
         .from("user_organizations")
         .select(
-          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale)",
+          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, parent_organization_id)",
         )
         .eq("user_id", user.id)
         .is("revoked_at", null)
@@ -216,6 +217,7 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
       role: row.role as Role,
       interface_settings: lerInterface(row.interface_settings).settings,
       locale: org?.locale ?? null,
+      parent_organization_id: org?.parent_organization_id ?? null,
     };
   });
 

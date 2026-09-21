@@ -5,6 +5,8 @@ import { ROLE_RANK } from "@/lib/auth/types";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { moedaServidaOu } from "@/lib/money";
 import { createClient } from "@/lib/supabase/server";
+import { AgencyWorkspacesPanel } from "@/components/agency/AgencyWorkspacesPanel";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { ZonaDePerigoDaOrganizacao } from "./_danger-zone";
 import { TenantForm } from "./_form";
 
@@ -21,6 +23,7 @@ interface OrgRow {
   dpo_email: string | null;
   privacy_policy_url: string | null;
   settings: Record<string, unknown> | null;
+  parent_organization_id: string | null;
 }
 
 export default async function TenantSettingsPage() {
@@ -35,17 +38,30 @@ export default async function TenantSettingsPage() {
   const { data } = await supabase
     .from("organizations")
     .select(
-      "display_name, legal_name, cnpj, timezone, locale, currency, media_retention_days, dpo_email, privacy_policy_url, settings",
+      "display_name, legal_name, cnpj, timezone, locale, currency, media_retention_days, dpo_email, privacy_policy_url, settings, parent_organization_id",
     )
     .eq("id", activeOrg.orgId)
     .maybeSingle();
 
   const row = (data ?? null) as OrgRow | null;
-  const lostReasonsExtra =
-    (row?.settings && Array.isArray((row.settings as { lost_reasons_extra?: unknown }).lost_reasons_extra)
+  const lostReasonsExtra = (
+    row?.settings &&
+    Array.isArray((row.settings as { lost_reasons_extra?: unknown }).lost_reasons_extra)
       ? ((row.settings as { lost_reasons_extra?: string[] }).lost_reasons_extra ?? [])
-      : []) as string[];
+      : []
+  ) as string[];
   const idioma = user.idioma;
+  const ehAgencia = row !== null && row.parent_organization_id === null;
+  let workspaces: { id: string; slug: string; display_name: string }[] = [];
+  if (ehAgencia) {
+    const admin = createAdminClient();
+    const { data: filhos } = await admin
+      .from("organizations")
+      .select("id, slug, display_name")
+      .eq("parent_organization_id", activeOrg.orgId)
+      .order("display_name", { ascending: true });
+    workspaces = (filhos ?? []) as typeof workspaces;
+  }
 
   return (
     <div className="flex h-full flex-col gap-6 p-6">
@@ -73,6 +89,7 @@ export default async function TenantSettingsPage() {
           }}
         />
       )}
+      {ehAgencia && <AgencyWorkspacesPanel workspaces={workspaces} />}
       {row && <ZonaDePerigoDaOrganizacao displayName={row.display_name} />}
     </div>
   );

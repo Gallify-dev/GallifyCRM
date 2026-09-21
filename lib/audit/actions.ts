@@ -535,6 +535,10 @@ export const AUDIT_ACTIONS = [
   "crm_task.updated",
   "crm_task.deleted",
   "organization.switched",
+  // Agência: criar um workspace cliente e aplicar o modelo (funil, rascunho,
+  // tipo de compromisso). O prompt não entra no metadata — só os ids.
+  "agency.workspace_created",
+  "agency.snapshot_applied",
 
   // Chamada de voz WhatsApp (spec 18, migration 0234). Ligá-la vincula um
   // SEGUNDO aparelho ao número que já atende, por um caminho que não é o
