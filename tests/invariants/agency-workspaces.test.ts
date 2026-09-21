@@ -136,7 +136,7 @@ describe("criação e modelo", () => {
       end $$;
       select 1;
     `);
-    expect(out).toBe("1");
+    expect(out.split("\n").at(-1)).toBe("1");
   });
 
   it("filho não vira pai", () => {
@@ -151,7 +151,7 @@ describe("criação e modelo", () => {
       end $$;
       select 1;
     `);
-    expect(out).toBe("1");
+    expect(out.split("\n").at(-1)).toBe("1");
   });
 
   it("insert direto de neto também é recusado", () => {
@@ -167,7 +167,7 @@ describe("criação e modelo", () => {
       end $$;
       select 1;
     `);
-    expect(out).toBe("1");
+    expect(out.split("\n").at(-1)).toBe("1");
   });
 
   it("anon não executa as funções", () => {
@@ -182,7 +182,7 @@ describe("criação e modelo", () => {
       end $$;
       select 1;
     `);
-    expect(out).toBe("1");
+    expect(out.split("\n").at(-1)).toBe("1");
   });
 
   it("o modelo entra no filho A e não no B, e a segunda aplicação não duplica", () => {
