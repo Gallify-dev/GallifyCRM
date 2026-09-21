@@ -8779,6 +8779,17 @@ export const DICIONARIO: Traducoes = {
   "Um material marcado aqui foi arquivado no acervo — o agente não lê mais ele.": { es: "Un material marcado aquí fue archivado en el acervo — el agente ya no lo lee." },
   "Materiais marcados aqui foram arquivados no acervo — o agente não lê mais eles.": { es: "Materiales marcados aquí fueron archivados en el acervo — el agente ya no los lee." },
   "Desmarque para voltar a salvar.": { es: "Desmárcalo para volver a guardar." },
+  "Criar cliente": { es: "Crear cliente" },
+  "Aplicar modelo": { es: "Aplicar modelo" },
+  "Identificador": { es: "Identificador" },
+  "Cada cliente fica numa organização separada. O que um cliente grava não aparece no outro.": {
+    es: "Cada cliente queda en una organización aparte. Lo que un cliente guarda no aparece en el otro.",
+  },
+  "Modelo aplicado.": { es: "Modelo aplicado." },
+  "Não foi possível criar o cliente.": { es: "No fue posible crear el cliente." },
+  "Não foi possível entrar neste cliente.": { es: "No fue posible entrar en este cliente." },
+  "Não foi possível aplicar o modelo.": { es: "No fue posible aplicar el modelo." },
+  "Ainda não há clientes.": { es: "Todavía no hay clientes." },
 };
 
 /**

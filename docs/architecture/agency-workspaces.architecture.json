@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Agência — workspaces clientes",
+    "subtitle": "O pai cria filhos isolados e aplica um modelo, sem canal e sem cobrança",
+    "output": "agency-workspaces.html",
+    "quality_profile": "standard"
+  },
+  "lanes": [
+    { "id": "humano", "label": "Pessoa" },
+    { "id": "app", "label": "Aplicativo" },
+    { "id": "db", "label": "Banco" }
+  ],
+  "mainPath": ["painel", "criar", "filho", "modelo", "troca"],
+  "nodes": [
+    {
+      "id": "painel",
+      "lane": "humano",
+      "col": 0,
+      "type": "ui",
+      "label": "Configurações › Organização — Clientes"
+    },
+    {
+      "id": "switcher",
+      "lane": "humano",
+      "col": 1,
+      "type": "ui",
+      "label": "TenantSwitcher marca o filho"
+    },
+    {
+      "id": "criar",
+      "lane": "app",
+      "col": 1,
+      "type": "service",
+      "label": "POST /api/v1/agency/workspaces"
+    },
+    {
+      "id": "entrar",
+      "lane": "app",
+      "col": 2,
+      "type": "service",
+      "label": "POST .../workspaces/:id/enter"
+    },
+    {
+      "id": "modelo",
+      "lane": "app",
+      "col": 3,
+      "type": "service",
+      "label": "POST .../workspaces/:id/snapshot"
+    },
+    {
+      "id": "filho",
+      "lane": "db",
+      "col": 2,
+      "type": "database",
+      "label": "organizations.parent_organization_id"
+    },
+    {
+      "id": "fncriar",
+      "lane": "db",
+      "col": 2,
+      "type": "database",
+      "label": "fn_agency_create_child"
+    },
+    {
+      "id": "fnsnap",
+      "lane": "db",
+      "col": 3,
+      "type": "database",
+      "label": "fn_agency_apply_snapshot"
+    },
+    {
+      "id": "auditoria",
+      "lane": "db",
+      "col": 4,
+      "type": "database",
+      "label": "api_audit_log agency.workspace_created / snapshot_applied"
+    },
+    {
+      "id": "troca",
+      "lane": "app",
+      "col": 4,
+      "type": "service",
+      "label": "setActiveOrg"
+    }
+  ],
+  "edges": [
+    {
+      "id": "painel-cria",
+      "from": "painel",
+      "to": "criar",
+      "label": "nome e identificador; o pai é a organização ativa"
+    },
+    {
+      "id": "criar-fn",
+      "from": "criar",
+      "to": "fncriar",
+      "label": "service role depois do requireRole admin"
+    },
+    {
+      "id": "fn-filho",
+      "from": "fncriar",
+      "to": "filho",
+      "label": "um nível; admins do pai viram admins do filho"
+    },
+    {
+      "id": "painel-modelo",
+      "from": "painel",
+      "to": "modelo",
+      "label": "preset de funil, rascunho e tipo de compromisso"
+    },
+    {
+      "id": "modelo-fn",
+      "from": "modelo",
+      "to": "fnsnap",
+      "label": "não publica o agente e não abre canal"
+    },
+    {
+      "id": "fnsnap-filho",
+      "from": "fnsnap",
+      "to": "filho",
+      "label": "grava funil, rascunho e tipo de compromisso no filho"
+    },
+    {
+      "id": "fnsnap-auditoria",
+      "from": "modelo",
+      "to": "auditoria",
+      "label": "ids, sem o texto do prompt"
+    },
+    {
+      "id": "criar-auditoria",
+      "from": "criar",
+      "to": "auditoria",
+      "label": "quem criou qual filho"
+    },
+    { "id": "painel-entrar", "from": "painel", "to": "entrar", "label": "só filho deste pai" },
+    {
+      "id": "entrar-troca",
+      "from": "entrar",
+      "to": "troca",
+      "label": "cookie active_org depois do vínculo"
+    },
+    {
+      "id": "troca-switcher",
+      "from": "troca",
+      "to": "switcher",
+      "label": "a lista de memberships já inclui o filho"
+    },
+    {
+      "id": "filho-switcher",
+      "from": "filho",
+      "to": "switcher",
+      "label": "parent_organization_id chega na membership"
+    }
+  ]
+}
