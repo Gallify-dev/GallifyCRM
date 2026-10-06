@@ -578,6 +578,10 @@ jobs:
       # Uma variável, os dois scripts: `scripts/test-db.sh` e
       # `scripts/test-update-com-dados.sh` leem esta para escolher a imagem.
       TEST_DB_IMAGE: pgvector/pgvector:pg${{ matrix.pg }}
+      # Soft-fork Gallify: `gh release view` no token do fork não resolve a
+      # última release publicada do Deskcomm (FATAL no conferir-isolamento-do-kit).
+      # Fixar a tag conhecida do tip sincronizado; upstream Deskcomm não precisa disto.
+      CONFERENCIA_KIT_RELEASE: v1.74.0
     steps:
       - uses: actions/checkout@v7
 
@@ -592,6 +596,7 @@ jobs:
         # consultas/hora por IP — o executor próprio é um IP só.
         env:
           GH_TOKEN: ${{ github.token }}
+          CONFERENCIA_KIT_RELEASE: v1.74.0
         run: pnpm test:db
 
       # O `update.sh` do cliente roda sobre um banco COM DADOS, e nenhum gate

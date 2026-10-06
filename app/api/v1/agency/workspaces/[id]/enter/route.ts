@@ -4,6 +4,7 @@ import { z } from "zod";
 import { clienteDaAgencia } from "@/lib/agency/acesso";
 import { fail, ok } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
+import { requireSupportWrite } from "@/lib/impersonate/support";
 import { setActiveOrg } from "@/app/actions/shell/setActiveOrg";
 
 /**
@@ -12,6 +13,9 @@ import { setActiveOrg } from "@/app/actions/shell/setActiveOrg";
  * linha e membro aceito do filho (setActiveOrg confere o vínculo de novo).
  */
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const supportDenied = await requireSupportWrite();
+  if (supportDenied) return supportDenied;
+
   const requestId = randomUUID();
   const authz = await requireRole("admin", { requestId, resource: "organization" });
   if (!authz.ok) return authz.response;
