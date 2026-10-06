@@ -86,8 +86,15 @@ export function TenantSwitcher() {
             onClick={() => { void switchTo(org.organization_id); }}
             className="flex items-center justify-between"
           >
-            <span className="truncate">{org.organization_name}</span>
-            {active?.orgId === org.organization_id && <span className="text-xs text-muted-foreground">✓</span>}
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="truncate">{org.organization_name}</span>
+              {org.parent_organization_id ? (
+                <span className="shrink-0 text-xs text-muted-foreground">{t("Cliente")}</span>
+              ) : null}
+            </span>
+            {active?.orgId === org.organization_id && (
+              <span className="text-xs text-muted-foreground">✓</span>
+            )}
           </DropdownMenuItem>
         ))}
         {user.is_platform_admin && <DropdownMenuItem asChild>
