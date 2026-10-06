@@ -8197,6 +8197,7 @@ export type Database = {
           media_retention_enforced: boolean
           onboarded_at: string | null
           onboarding_state: Json
+          parent_organization_id: string | null
           privacy_policy_url: string | null
           rate_limit_rps: number
           redacted_at: string | null
@@ -8225,6 +8226,7 @@ export type Database = {
           media_retention_enforced?: boolean
           onboarded_at?: string | null
           onboarding_state?: Json
+          parent_organization_id?: string | null
           privacy_policy_url?: string | null
           rate_limit_rps?: number
           redacted_at?: string | null
@@ -8253,6 +8255,7 @@ export type Database = {
           media_retention_enforced?: boolean
           onboarded_at?: string | null
           onboarding_state?: Json
+          parent_organization_id?: string | null
           privacy_policy_url?: string | null
           rate_limit_rps?: number
           redacted_at?: string | null
@@ -8266,7 +8269,15 @@ export type Database = {
           timezone?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "organizations_parent_organization_id_fkey"
+            columns: ["parent_organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       outbound_copies: {
         Row: {
@@ -10422,6 +10433,14 @@ export type Database = {
       }
       fn_create_tenant_with_owner: {
         Args: { p_actor: string; p_key: string; p_request: Json; p_hash: string }
+        Returns: Json
+      }
+      fn_agency_apply_snapshot: {
+        Args: { p_actor: string; p_child: string; p_snapshot: Json }
+        Returns: Json
+      }
+      fn_agency_create_child: {
+        Args: { p_actor: string; p_parent: string; p_display_name: string; p_slug: string }
         Returns: Json
       }
       fn_accept_team_invite: {

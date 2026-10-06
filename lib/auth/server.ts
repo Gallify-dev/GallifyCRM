@@ -52,6 +52,7 @@ interface OrgJoin {
   country: string | null;
   status?: string;
   suspended_kind?: string | null;
+  parent_organization_id?: string | null;
 }
 
 /** O mesmo `organizations`, alcançado por outro embed: só as portas da EMPRESA. */
@@ -202,7 +203,7 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
           // issue #1341 acabou de engordar), e o alias traz só as portas da EMPRESA.
           // `timezone` veio do main (fuso da organização nas listas, #1290) e convive
           // com o alias: um embed por relação, sem renomear o que já existia.
-          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, timezone, currency, country, status, suspended_kind), interface_da_empresa:organizations(interface_settings)",
+          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, timezone, currency, country, status, suspended_kind, parent_organization_id), interface_da_empresa:organizations(interface_settings)",
         )
         .eq("user_id", user.id)
         .is("revoked_at", null)
@@ -257,6 +258,7 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
       // vínculo decidia sozinho, então a escolha da empresa não existia.
       interface_settings: combinarInterfaces(empresa?.interface_settings, row.interface_settings),
       locale: org?.locale ?? null,
+      parent_organization_id: org?.parent_organization_id ?? null,
       timezone: org?.timezone ?? null,
       currency: org?.currency ?? null,
       country: org?.country ?? null,

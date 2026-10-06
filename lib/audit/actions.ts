@@ -740,6 +740,10 @@ export const AUDIT_ACTIONS = [
   "proposal_template.imported",
 
   "organization.switched",
+  // Agência: criar um workspace cliente e aplicar o modelo (funil, rascunho,
+  // tipo de compromisso). O prompt não entra no metadata — só os ids.
+  "agency.workspace_created",
+  "agency.snapshot_applied",
   // Chamada originada via /api/v1/calls (módulo VoIP, migration 0347).
   // Só o CREATE é auditado aqui — status/transcript são atualizados pelo
   // worker via admin client, fora do caminho de sessão que este audit cobre.

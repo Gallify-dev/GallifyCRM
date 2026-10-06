@@ -14519,6 +14519,17 @@ export const DICIONARIO: Traducoes = {
   "canais já estavam reativados": { es: "canales ya estaban reactivados" },
   "canal arquivado fica de fora": { es: "canal archivado queda fuera" },
   "canais arquivados ficam de fora": { es: "canales archivados quedan fuera" },
+  "Criar cliente": { es: "Crear cliente" },
+  "Aplicar modelo": { es: "Aplicar modelo" },
+  "Identificador": { es: "Identificador" },
+  "Cada cliente fica numa organização separada. O que um cliente grava não aparece no outro.": {
+    es: "Cada cliente queda en una organización aparte. Lo que un cliente guarda no aparece en el otro.",
+  },
+  "Modelo aplicado.": { es: "Modelo aplicado." },
+  "Não foi possível criar o cliente.": { es: "No fue posible crear el cliente." },
+  "Não foi possível entrar neste cliente.": { es: "No fue posible entrar en este cliente." },
+  "Não foi possível aplicar o modelo.": { es: "No fue posible aplicar el modelo." },
+  "Ainda não há clientes.": { es: "Todavía no hay clientes." },
 };
 
 /**

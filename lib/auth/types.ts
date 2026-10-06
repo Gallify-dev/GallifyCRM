@@ -97,6 +97,8 @@ export interface UserOrgMembership {
    * para responder algo que a primeira já tinha em mãos.
    */
   locale?: string | null;
+  /** Preenchido quando a organização é um workspace cliente de uma agência. */
+  parent_organization_id?: string | null;
   /**
    * Fuso IANA da organização (`organizations.timezone`).
    *

@@ -6,6 +6,8 @@ import { normalizarIdioma } from "@/lib/i18n/idiomas";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { moedaServidaOu } from "@/lib/money";
 import { createClient } from "@/lib/supabase/server";
+import { AgencyWorkspacesPanel } from "@/components/agency/AgencyWorkspacesPanel";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { ZonaDePerigoDaOrganizacao } from "./_danger-zone";
 import { TenantForm } from "./_form";
 import { InterfaceDaEmpresaForm } from "./_interface";
@@ -26,6 +28,7 @@ interface OrgRow {
   privacy_policy_url: string | null;
   /** Portas escolhidas pela EMPRESA (issue #1341). Opaco aqui: quem lê é `lerInterface`. */
   interface_settings: unknown;
+  parent_organization_id: string | null;
 }
 
 export default async function TenantSettingsPage() {
@@ -40,13 +43,24 @@ export default async function TenantSettingsPage() {
   const { data } = await supabase
     .from("organizations")
     .select(
-      "display_name, legal_name, cnpj, country, timezone, locale, currency, media_retention_days, media_retention_enforced, dpo_email, privacy_policy_url, interface_settings",
+      "display_name, legal_name, cnpj, country, timezone, locale, currency, media_retention_days, media_retention_enforced, dpo_email, privacy_policy_url, interface_settings, parent_organization_id",
     )
     .eq("id", activeOrg.orgId)
     .maybeSingle();
 
   const row = (data ?? null) as OrgRow | null;
   const idioma = user.idioma;
+  const ehAgencia = row !== null && row.parent_organization_id === null;
+  let workspaces: { id: string; slug: string; display_name: string }[] = [];
+  if (ehAgencia) {
+    const admin = createAdminClient();
+    const { data: filhos } = await admin
+      .from("organizations")
+      .select("id, slug, display_name")
+      .eq("parent_organization_id", activeOrg.orgId)
+      .order("display_name", { ascending: true });
+    workspaces = (filhos ?? []) as typeof workspaces;
+  }
 
   return (
     <div className="flex h-full flex-col gap-6 p-6">
@@ -86,6 +100,7 @@ export default async function TenantSettingsPage() {
           role={activeOrg.role}
         />
       )}
+      {ehAgencia && <AgencyWorkspacesPanel workspaces={workspaces} />}
       {row && <ZonaDePerigoDaOrganizacao displayName={row.display_name} />}
     </div>
   );
