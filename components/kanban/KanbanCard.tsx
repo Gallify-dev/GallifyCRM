@@ -3,7 +3,9 @@ import { Draggable } from "@hello-pangea/dnd";
 import type { MouseEvent } from "react";
 import { useT } from "@/hooks/i18n/useT";
 import { cn } from "@/lib/utils";
+import { formatValorDoNegocio, MOEDA_PADRAO } from "@/lib/money";
 import type { Lead } from "@/lib/types/leads";
+import type { Stage } from "@/lib/kanban/types";
 import { resolveCardState, stageAgeLabel, type CardInput } from "@/lib/kanban/card-state";
 import { KanbanCardActions } from "./KanbanCardActions";
 import { NextActionSlot } from "./NextActionSlot";
@@ -12,6 +14,7 @@ import { ConversaSlot } from "./ConversaSlot";
 import { ScoreSlot } from "./ScoreSlot";
 import { OwnerBadge } from "./OwnerBadge";
 import { ContatoNoCard } from "./ContatoNoCard";
+import { TarefasNoCard } from "./TarefasNoCard";
 
 /** Os dois gestos de seleção que o card sabe relatar. */
 export type GestoDeSelecao = "alterna" | "intervalo";
@@ -44,20 +47,17 @@ interface KanbanCardProps {
   onSelect?: (leadId: string, gesto: GestoDeSelecao) => void;
   /** Abrir o dossiê. Separado de `onSelect`: são gestos e intenções diferentes. */
   onOpen?: (leadId: string) => void;
+  /** Repassados ao menu de ações ("Mover para…"). */
+  etapas?: Stage[];
+  onMoverPara?: (lead: Lead, stageId: string) => void;
 }
 
-function formatBRL(cents: number | null, currency: string | null): string | null {
+function formatValor(cents: number | null, currency: string | null): string | null {
+  // A régua do negócio (×100 em qualquer moeda) e o locale da moeda moram em
+  // `formatValorDoNegocio` — a mesma função do total da coluna, para o card e o
+  // topo da coluna nunca escreverem o mesmo dinheiro de dois jeitos.
   if (cents == null) return null;
-  const code = currency ?? "BRL";
-  try {
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: code,
-      maximumFractionDigits: 0,
-    }).format(cents / 100);
-  } catch {
-    return `${(cents / 100).toFixed(2)} ${code}`;
-  }
+  return formatValorDoNegocio(cents, currency ?? MOEDA_PADRAO, { semCentavos: true });
 }
 
 /**
@@ -81,9 +81,11 @@ export function KanbanCard({
   pulseCount = 0,
   onSelect,
   onOpen,
+  etapas,
+  onMoverPara,
 }: KanbanCardProps) {
   const t = useT();
-  const value = formatBRL(card.valueCents, card.currency);
+  const value = formatValor(card.valueCents, card.currency);
   const state = resolveCardState(card, t);
   const age = stageAgeLabel(card.hoursInStage, t);
 
@@ -239,7 +241,12 @@ export function KanbanCard({
                 </button>
               </h3>
             </div>
-            <KanbanCardActions lead={lead} pipelineId={pipelineId} />
+            <KanbanCardActions
+              lead={lead}
+              pipelineId={pipelineId}
+              etapas={etapas}
+              onMoverPara={onMoverPara}
+            />
           </div>
 
           {/* ② valor — altura reservada mesmo sem valor, senão o card encolhe. */}
@@ -294,19 +301,26 @@ export function KanbanCard({
           {/* A última mensagem, com atalho para o inbox. Fica ANTES do rodapé
               de dono/tempo porque é conteúdo do negócio, não metadado do card —
               e some por inteiro quando não há conversa. */}
-          <ConversaSlot conversa={lead.conversa} />
+          <ConversaSlot
+            conversa={lead.conversa}
+            contactId={lead.contact_id}
+            phone={lead.contact_phone}
+          />
 
           {/* Telefone, e-mail e links do contato — some por inteiro quando o
               negócio não tem nada disso, como a conversa acima. */}
           <ContatoNoCard lead={lead} />
 
-          {/* ④ dono · ⑤ tempo no estágio */}
+          {/* ④ dono (+ selo de tarefas) · ⑤ tempo no estágio */}
           <div className="mt-1 flex h-6 items-center justify-between gap-2">
-            <OwnerBadge
-              ownerKind={card.owner.kind}
-              ownerName={card.owner.name}
-              agentVersion={card.owner.agentVersion}
-            />
+            <div className="flex min-w-0 items-center gap-2">
+              <OwnerBadge
+                ownerKind={card.owner.kind}
+                ownerName={card.owner.name}
+                agentVersion={card.owner.agentVersion}
+              />
+              <TarefasNoCard tarefas={lead.tarefas} />
+            </div>
             <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-text-muted">
               {state.showStageAge && age
                 ? `${age} ${t("em")} ${card.stageName}`

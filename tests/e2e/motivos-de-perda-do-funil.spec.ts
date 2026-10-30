@@ -34,7 +34,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 import { carregarEnvLocal } from "../../scripts/lib/env-de-teste";
@@ -69,7 +69,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app/, { timeout: 60_000 });
 }
 
@@ -187,7 +187,7 @@ test.describe("Janela de perder — os motivos são os do funil", () => {
     // ── 2. "OUTRO" RECUSA ANTES DO CLIQUE, E DIZ ONDE CADASTRAR ────────────
     await page.locator('input[name="lost-reason"][value="other"]').check();
     await expect(
-      page.getByText(/cadastre em Configurações/),
+      page.getByText(/cadastre em CRM › Ver tudo em CRM › Etapas do funil/),
       "sem esta frase, 'Outro' é beco sem saída: recusa todo texto novo e não diz onde se cadastra um",
     ).toBeVisible();
 

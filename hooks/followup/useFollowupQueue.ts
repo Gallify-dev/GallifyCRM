@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api/client";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
 import { useT } from "@/hooks/i18n/useT";
+import { dossieQueryKey } from "./useFollowupEnrollment";
 
 /**
  * Os estados que `followup_enrollments.status` aceita — todos eles.
@@ -22,6 +23,9 @@ export type FollowupEnrollmentStatus =
   | "dormente"
   | "paused_handoff"
   | "paused_manual"
+  // Roteiro de atendimento em andamento (0394): conduzido pelo turno do agente,
+  // não pelo relógio. O motor de follow-up nunca o lê.
+  | "coletando"
   | "completed"
   | "cancelled"
   | "dead";
@@ -89,7 +93,8 @@ export function useCancelFollowupEnrollment() {
       );
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, enrollmentId) => {
+      void qc.invalidateQueries({ queryKey: dossieQueryKey(enrollmentId) });
       void qc.invalidateQueries({ queryKey: ["followup", "queue"] });
       toast.success(t("Follow-up cancelado."));
     },

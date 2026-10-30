@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Card } from "@/components/ui/card";
 import { loadAuthUser } from "@/lib/auth/server";
+import { tagDeIdioma } from "@/lib/i18n/datas";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { normalizarIdioma } from "@/lib/i18n/idiomas";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -52,9 +53,14 @@ export default async function Page() {
   const db = createAdminClient();
   const [catalogos, instalacoes, vinculos] = await Promise.all([
     db.from("extension_catalogs").select("id,origin,revision,digest,admitted_at").order("admitted_at", { ascending: false }),
+    // Remoção aqui é soft delete: a linha fica, com `removed_at` preenchido. Sem
+    // este filtro a tela chamaria de "instalada" uma extensão que o operador já
+    // removeu — e contaria os vínculos dela junto. A irmã de produção
+    // (`lib/extensions/service.ts`) filtra no banco pelo mesmo motivo.
     db
       .from("extension_installations")
       .select("id,publisher,name,version,installed_at")
+      .is("removed_at", null)
       .order("installed_at", { ascending: false }),
     db.from("organization_extensions").select("installation_id,enabled"),
   ]);
@@ -68,7 +74,7 @@ export default async function Page() {
   }
 
   const dataLegivel = (iso: string) =>
-    new Date(iso).toLocaleDateString(idioma === "es" ? "es" : "pt-BR", {
+    new Date(iso).toLocaleDateString(tagDeIdioma(idioma), {
       day: "2-digit",
       month: "short",
       year: "numeric",

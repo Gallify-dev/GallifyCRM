@@ -2,8 +2,8 @@ import { type NextRequest } from "next/server";
 import { cookies } from "next/headers";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { requirePlatformAdmin } from "@/lib/auth/requirePlatformAdmin";
-import { loadAuthUser, mfaEmDivida, resolveActiveOrg } from "@/lib/auth/server";
+import { falhaDaEscritaDePlatformAdmin, requirePlatformAdmin } from "@/lib/auth/requirePlatformAdmin";
+import { loadAuthUser, mfaEmDividaEstrita, orgAtivaSemPortao } from "@/lib/auth/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ok, fail } from "@/lib/api/wrappers";
@@ -20,13 +20,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   if (!input.success) return fail("validation_failed", "Modo de acompanhamento inválido.", 422, { requestId });
   let ctx;
   try { ctx = await requirePlatformAdmin(); }
-  catch { return fail("forbidden", "Administração da plataforma necessária.", 403, { requestId }); }
-  if (await mfaEmDivida()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
+  catch (err) { return falhaDaEscritaDePlatformAdmin(err, requestId, "Administração da plataforma necessária."); }
+  if (await mfaEmDividaEstrita()) return fail("mfa_required", "Confirme a verificação em duas etapas.", 403, { requestId });
   if (!isImpersonateSecretReady()) return fail("upstream_unavailable", "Acompanhamento não configurado nesta instalação.", 503, { requestId });
   const user = await loadAuthUser();
   if (!user) return fail("unauthenticated", "Entre novamente.", 401, { requestId });
   if (user.support) return fail("state_conflict", "Encerre o acompanhamento atual primeiro.", 409, { requestId });
-  const previous = await resolveActiveOrg(user);
+  // Sem o porteiro das telas: com a org ativa do próprio admin suspensa,
+  // `resolveActiveOrg` redireciona, o handler responde 307, o fetch segue e o
+  // admin cai em "Conta suspensa" sem acompanhamento nenhum aberto. Aqui só se
+  // guarda para onde voltar ao fim do acompanhamento.
+  const previous = await orgAtivaSemPortao(user);
   const db = await createClient();
   const { data: claims } = await db.auth.getClaims();
   const sessionId = claims?.claims.session_id;

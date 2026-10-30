@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TeamMembersClient } from "./_components/TeamMembersClient";
 import { TeamInvitesClient } from "./_components/TeamInvitesClient";
 import { AttendantsClient } from "./_components/AttendantsClient";
+import { fusoUtilizavel } from "@/lib/tempo/fusos";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Equipe" };
@@ -46,7 +47,7 @@ export default async function TeamPage({
   const isManager = !!activeOrg && ROLE_RANK[activeOrg.role] >= ROLE_RANK.manager;
 
   return (
-    <div className="flex h-full flex-col gap-6 p-6">
+    <div className="flex h-full flex-col gap-6 md:p-6">
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight">{t("Equipe")}</h1>
@@ -78,7 +79,7 @@ export default async function TeamPage({
         </TabsContent>
         <TabsContent value="attendants" className="mt-4">
           {isManager ? (
-            <AttendantsClient canManage={isManager} />
+            <AttendantsClient canManage={isManager} organizationTimezone={fusoUtilizavel(activeOrg?.timezone)} />
           ) : (
             <p className="text-sm text-muted-foreground">
               {/*

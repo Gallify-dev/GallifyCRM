@@ -163,7 +163,7 @@ A janela de 24h da Meta (envio proativo só com template aprovado fora da janela
 | `document` | sim | sim | PDF, DOCX, XLSX; max 16MB |
 | `sticker` | sim | sim | requer engine WEBJS pra animados |
 | `location` | sim | sim | lat/lng + label opcional |
-| `contact` | sim | sim | vCard |
+| `contact` | sim | sim | vCard; cartão e prévias de resposta/citação mostram o nome, e o telefone aceita propriedades `TEL` com grupo (`item1.TEL`) |
 | `reaction` | sim | sim | emoji em mensagem específica |
 | `system` | sim | não | eventos do WhatsApp (revogação, edit) — registra na timeline |
 
@@ -175,7 +175,7 @@ A janela de 24h da Meta (envio proativo só com template aprovado fora da janela
 **ACs principais.**
 - Recebimento de cada um dos 10 tipos é persistido com `type` correto e payload parseado
 - Outbound de imagem com upload + URL assinada passa por WAHA e chega no cliente em <10s p95
-- Mensagem revogada pelo cliente é marcada `is_revoked=true` na thread, com timestamp original preservado
+- Mensagem revogada é marcada (`revoked_at`) na thread, com o timestamp original preservado; a bolha fica cinza e diz quem apagou. O **texto** segue a régua de `lib/messaging/apagada.ts`: a revogada **pelo contato** não mostra o texto; a revogada **pelo atendente** segue visível à equipe, marcada "Visível só aqui no CRM". Busca, citação e PDF da conversa não trazem o texto apagado. Quem apaga pelo **aplicativo do WhatsApp** (o contato, ou o próprio número pelo celular) deixa trilha de auditoria (`message.revoked_in_channel`: o evento, nunca o corpo); o apagar feito pela tela do CRM é auditado como `message.revoked`, com o ator, e o eco que o WhatsApp devolve dele não gera trilha em dobro quando chega depois de a rota carimbar `revoked_at`, nem numa reentrega do mesmo evento (o ingest só registra a linha que ainda não estava apagada). Se o eco chegar antes do carimbo — a rota carimba depois de o WAHA responder, e a ordem não é garantida nem foi medida —, sai uma `message.revoked_in_channel` a mais ao lado da `message.revoked`
 
 ### 3.6 Mídia via Supabase Storage
 
@@ -289,7 +289,7 @@ A janela de 24h da Meta (envio proativo só com template aprovado fora da janela
 |---|---|---|
 | `sync-sessions` | a cada 1 min | Health check de todas sessões; faz `GET /api/sessions/<name>` na WAHA; sincroniza status DB ↔ WAHA; alerta se >5min em status não-`WORKING` |
 | `recover-stuck-messages` | a cada 1 min | Marca mensagens com `status='sending'` há >5min como `failed` + atividade na timeline; permite retry manual |
-| `process-pending-webhooks` | a cada 1 min | Re-processa webhooks que entraram em `webhook_events_log` mas não foram fully processados (fallback caso WAHA Plus tenha falha de retry) |
+| `process-pending-webhooks` (no código: `webhook-replay`) | a cada 1 min | Re-processa webhooks que entraram em `webhook_events_log` mas não foram fully processados (fallback caso WAHA Plus tenha falha de retry) |
 
 **Princípios.**
 - Crons são autenticados via `INTERNAL_SECRET` (header) — distinto de `SUPABASE_SERVICE_ROLE_KEY` (Sub-PRD 01 §4.1)
@@ -300,7 +300,7 @@ A janela de 24h da Meta (envio proativo só com template aprovado fora da janela
 **ACs principais.**
 - Sessão derrubada manualmente (stop no WAHA) é detectada pelo cron e marcada como `STOPPED` em <2min
 - Mensagem em `sending` há 6min é marcada como `failed` na próxima rodada do cron
-- Webhook que falhou processamento é re-tentado até 3x; após isso vai pra dead-letter `webhook_events_log.status='dead'` com alerta
+- Webhook cuja ingestão falhou por banco indisponível responde 503 + `Retry-After` (o WAHA reentrega) e fica `error` com `transitoria:`; o cron `webhook-replay` o re-tenta até 20x; depois vai pra dead-letter `webhook_events_log.status='dead'` com aviso na Central
 
 ---
 
@@ -396,7 +396,7 @@ O canal WhatsApp é considerado **MVP-completo** quando:
 |---|---|---|---|
 | W1 | **Banimento de número WhatsApp** (detectado como API não-oficial; tráfego destoa de humano) | Crítico | Anti-banimento §3.7 obrigatório (throttle, warm-up, spinning, STOP, janela horário, limites diários); número backup pré-aquecido por tenant; runbook de troca-de-número; **NÃO há fix técnico pós-banimento** — só prevenção |
 | W2 | **Perda de sessão sem aviso** (WAHA crash, container reiniciado, volume `/app/.sessions` corrompido, `STARTING` indefinido) | Alto | Cron `sync-sessions` com alerta em >5min fora de `WORKING`; runbook de rebuild do volume `/app/.sessions`; backup periódico do estado da sessão (decisão na Spec) |
-| W3 | **Falha de webhook** (WAHA down, network partition, handler crash) | Alto | `webhook_events_log` raw como fonte de verdade; cron `process-pending-webhooks` re-processa; WAHA Plus tem retry nativo (Core não); dead-letter com alerta após 3 tentativas |
+| W3 | **Falha de webhook** (WAHA down, network partition, handler crash) | Alto | `webhook_events_log` raw como fonte de verdade; a rota devolve 503 em falha transitória do banco para o WAHA reentregar, e o cron `webhook-replay` re-processa o que as reentregas não salvaram; dead-letter com aviso na Central após 20 tentativas |
 | W4 | **Inconsistência multi-device** (mensagem enviada por celular não aparece no CRM, ou aparece duplicada) | Médio | Assinar `message.any` (não `message`); idempotência por `(org, external_id)`; teste de regressão simulando envio cross-device |
 | W5 | **Abuso de envio em campanha** (atendente faz blast de 1000 msgs sem warm-up) | Alto | Hard-cap diário por sessão; validação de min 5 variações de copy; bloqueio de campanha durante warm-up; revisão manual de campanhas >500 msgs no MVP |
 | W6 | **Vazamento de credentials WAHA** (`WAHA_API_KEY` em log, repo, ou env exposto) | Crítico | Plaintext apenas no `.env` da instalação (permissão 600); sanitização agressiva em logs; `gitleaks` pre-commit (Sub-PRD 01 §4.1); rotação trimestral; SHA512 no servidor WAHA garante que comprometimento do servidor não vaza o plaintext |

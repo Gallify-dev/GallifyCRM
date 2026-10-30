@@ -14,8 +14,15 @@ import {
   resolvePhoneJidDigitsForCall,
   resolveWhatsappIdForContactCard,
 } from "@/lib/waha/resolve-contact-whatsapp-id";
-import { parseWahaMessageId, wahaEchoExternalIds } from "@/lib/waha/message-id";
-import { resolveWahaChatId } from "@/lib/waha/send";
+import {
+  bareWaMessageId,
+  canonicalWahaExternalId,
+  chatIdFromWaMessageId,
+  parseWahaMessageId,
+  wahaEchoExternalIds,
+} from "@/lib/waha/message-id";
+import { consultarNomeDaAgenda } from "@/lib/contacts/nome-da-agenda";
+import { marcarConversaComoLida, resolveWahaChatId } from "@/lib/waha/send";
 import type { FetchedMedia } from "@/lib/messaging/media/types";
 import { DETALHE_CREDENCIAL_RECUSADA } from "../health";
 import type { ChannelAdapter, ChannelHealth, OutboundEnvelope, RecipientInput } from "../types";
@@ -39,6 +46,29 @@ export function statusHttpDoErroWaha(msg: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * O envio NOWEB grava só a cauda do id; o webhook grava o id completo. Quando o
+ * completo existe, ele também preserva o @lid original do chat — por isso ele
+ * vence o endereço resolvido a partir do contato.
+ */
+function enderecoDaMensagem(input: { recipient: string | null; externalId: string }) {
+  const client = getWahaClient();
+  if (!client) throw new Error("waha_not_configured");
+  const chatId = chatIdFromWaMessageId(input.externalId) ?? input.recipient;
+  if (!chatId) throw new Error("recipient_unavailable");
+  return { client, chatId, messageId: idCompletoDaMensagem(input.externalId, chatId) };
+}
+
+/**
+ * O id que a API do WAHA pede (editar, apagar, citar) é o COMPLETO. Só o que é
+ * nosso fica gravado bare — o envio e, desde o #1855, o eco do que o dono digitou
+ * no celular —, e o que é nosso é sempre `fromMe`, daí o `true_`. O inbound
+ * chega composto e passa intacto.
+ */
+function idCompletoDaMensagem(externalId: string, chatId: string): string {
+  return externalId.includes("_") ? externalId : `true_${chatId}_${bareWaMessageId(externalId)}`;
+}
+
 export const wahaAdapter: ChannelAdapter = {
   provider: "waha",
 
@@ -54,6 +84,20 @@ export const wahaAdapter: ChannelAdapter = {
    */
   echoExternalIds(input: { externalId: string; recipient: string }): string[] {
     return wahaEchoExternalIds(input.externalId, input.recipient);
+  },
+
+  /**
+   * A forma canônica de `messages.external_id`: a CAUDA do id (`3EB0…`) em
+   * conversa individual, o id INTACTO em grupo — a que o eco grava em cada um
+   * (regra e porquê em `canonicalWahaExternalId`). O envio devolve a cauda no
+   * NOWEB e o `_serialized` completo no WEBJS — gravar o que veio faria os DOIS
+   * lados escreverem strings diferentes do mesmo id, o `unique (organization_id,
+   * external_id)` nunca disparasse e o eco que chegasse perto do carimbo virasse
+   * a segunda linha (#196). Reduzir aqui (não no handler) mantém a regra do id
+   * dentro da fronteira de canal.
+   */
+  canonicalExternalId(externalId: string): string {
+    return canonicalWahaExternalId(externalId);
   },
 
   // Mesmo pre-check que o handler já fazia com `getWahaClient() !== null`,
@@ -110,6 +154,25 @@ export const wahaAdapter: ChannelAdapter = {
   },
 
   /**
+   * Agenda do aparelho primeiro (`name`), apelido do perfil se a agenda não
+   * tiver. Transporte ausente é `null` — a varredura carimba sem tratar como
+   * "não existe".
+   */
+  async resolveAddressBookName(input: {
+    sessionRef: string;
+    phone: string | null;
+    lid: string | null;
+  }): Promise<{ agenda: string | null; perfil: string | null } | null> {
+    const client = getWahaClient();
+    if (!client) return null;
+    return consultarNomeDaAgenda(
+      (contactId) => client.getContact(input.sessionRef, contactId),
+      input.phone,
+      input.lid,
+    );
+  },
+
+  /**
    * "digitando…" no aparelho do cliente, antes da 1ª bolha do turno da IA.
    *
    * Transporte não configurado é NOOP, não erro — mesmo critério do `send`
@@ -120,6 +183,25 @@ export const wahaAdapter: ChannelAdapter = {
     const client = getWahaClient();
     if (!client) return;
     await client.setPresence(input.sessionRef, input.recipient, "typing");
+  },
+
+  async editMessage(input: {
+    sessionRef: string;
+    recipient: string | null;
+    externalId: string;
+    text: string;
+  }): Promise<void> {
+    const { client, chatId, messageId } = enderecoDaMensagem(input);
+    await client.editMessage(input.sessionRef, chatId, messageId, input.text);
+  },
+
+  async revokeMessage(input: {
+    sessionRef: string;
+    recipient: string | null;
+    externalId: string;
+  }): Promise<void> {
+    const { client, chatId, messageId } = enderecoDaMensagem(input);
+    await client.deleteMessage(input.sessionRef, chatId, messageId);
   },
 
   /**
@@ -167,6 +249,36 @@ export const wahaAdapter: ChannelAdapter = {
 
       return { reachable: false, status: null, detail: msg.slice(0, 200) };
     }
+  },
+
+  /**
+   * Uma PÁGINA da agenda do aparelho pareado (`GET /api/contacts/all`) — #2736.
+   *
+   * Só quem conversa com um aparelho de verdade tem esta lista do lado de lá,
+   * então só este adapter implementa o método: quem chama testa a presença
+   * dele em vez de perguntar QUAL provider é. A ordenação estável que faz o
+   * offset andar sem pular nem repetir, e a tolerância de formato, moram no
+   * método do cliente (`listarAgendaDoAparelho`), com o próprio contrato.
+   */
+  async listPhonebook(input: { sessionRef: string; limit: number; offset: number }) {
+    const client = getWahaClient();
+    if (!client) throw new Error("waha_not_configured");
+    return client.listarAgendaDoAparelho(input.sessionRef, {
+      limit: input.limit,
+      offset: input.offset,
+    });
+  },
+
+  async listGroups(input: { sessionRef: string }) {
+    const client = getWahaClient();
+    if (!client) throw new Error("waha_not_configured");
+    return client.listarGrupos(input.sessionRef);
+  },
+
+  async setGroupIntake(input: { sessionRef: string; receive: boolean }) {
+    const client = getWahaClient();
+    if (!client) return false;
+    return client.definirRecebimentoDeGrupos(input.sessionRef, input.receive);
   },
 
   /**
@@ -231,9 +343,28 @@ export const wahaAdapter: ChannelAdapter = {
         envelope.body ?? "",
         // A citação é enfeite da conversa, nunca condição de envio: quando não
         // há, o envio segue igual. Ver `OutboundEnvelope.replyToExternalId`.
-        envelope.replyToExternalId,
+        envelope.replyToExternalId ? idCompletoDaMensagem(envelope.replyToExternalId, to) : null,
       );
     }
+
+    // O visto azul no aparelho do cliente (issue #2981): responder sem ter
+    // "lido" é o que denuncia automação. Vem DEPOIS de o transporte aceitar a
+    // mensagem, no MESMO endereço resolvido do envio — marcar outro deixaria a
+    // conversa respondida sem visto —, e o helper falha macio: a resposta já
+    // saiu, e um recibo de leitura que falha nunca custa a mensagem.
+    //
+    // `void`, e não `await`: o pedido do visto sai aqui mesmo, logo depois do
+    // aceite, mas NÃO segura o retorno. Quem chama só grava o `external_id`
+    // depois que este `send` volta, e o `message.ack` do webhook encontra a
+    // linha SÓ por esse id (`handleAck` em `lib/waha/ingest.ts`): um ack de
+    // "entregue" que chegasse durante o visto se perderia, e a mensagem ficaria
+    // em "enviada" (o efeito descrito em `session-reconciler.ts`). O helper
+    // nunca rejeita, então não há rejeição solta.
+    void marcarConversaComoLida({
+      organizationId: envelope.organizationId,
+      sessionName: envelope.sessionRef,
+      chatId: to,
+    });
 
     return { externalId: parseWahaMessageId(res) };
   },

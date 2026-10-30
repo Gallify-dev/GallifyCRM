@@ -23,7 +23,7 @@ describe("ehIdentificadorTecnico", () => {
     expect(ehIdentificadorTecnico("Contato 543134@lid")).toBe(true);
     expect(ehIdentificadorTecnico("5531988887777@c.us")).toBe(true);
     expect(ehIdentificadorTecnico("120363@g.us")).toBe(true);
-    expect(ehIdentificadorTecnico("558183647258@s.whatsapp.net")).toBe(true);
+    expect(ehIdentificadorTecnico("5511900000001@s.whatsapp.net")).toBe(true);
   });
 
   it("reconhece o rótulo que o código antigo inventava", () => {
@@ -184,6 +184,11 @@ describe("a sétima cópia não nasce", () => {
       motivo: "nome do NÚMERO no canal oficial da Meta, não de contato",
     },
     {
+      arquivo: "app/api/v1/channels/official/route.ts",
+      trecho: 'display_name: existente?.display_name || (validacao.verifiedName ?? "Canal oficial"),',
+      motivo: "nome interno do CANAL oficial preservado ao salvar a credencial de novo, não de contato",
+    },
+    {
       arquivo: "app/api/v1/contacts/_handler.ts",
       trecho: "display_name: input.display_name ?? null,",
       motivo: "grava a coluna que veio no corpo; não decide o nome exibido",
@@ -209,9 +214,9 @@ describe("a sétima cópia não nasce", () => {
       motivo: "nome do CANAL conectado",
     },
     {
-      arquivo: "components/inbox/ConversationListItem.tsx",
-      trecho: "canal?.phone_number ?? canal?.display_name ?? null",
-      motivo: "número da EMPRESA por onde a conversa chegou, não o do cliente",
+      arquivo: "components/connections/RedesSociaisClient.tsx",
+      trecho: "{orfao.display_name ?? orfao.account_id}",
+      motivo: "rótulo do CANAL órfão (channel_sessions), não de contato",
     },
     {
       arquivo: "lib/ai/classifier-models.ts",

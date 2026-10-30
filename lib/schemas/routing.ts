@@ -9,13 +9,20 @@
  */
 import { z } from "zod";
 
+import { VISIBILITY_MODES as MODOS_DE_VISIBILIDADE } from "@/lib/auth/types";
 import { PRAZO_MAX_MINUTOS, PRAZO_MIN_MINUTOS } from "@/lib/escalacao/devolucao-automatica";
 import { fusoValido } from "@/lib/tempo/fusos";
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** Modos de roteamento no MVP (decisão G1-06b); "load" fica pós-MVP. */
-export const ROUTING_MODES = ["manual", "round_robin"] as const;
+/**
+ * Modos de roteamento. `manual` e `round_robin` são o MVP (decisão G1-06b);
+ * `load` — o de menor carga, com desempate pelo rodízio — era o "pós-MVP"
+ * prometido ali e entrou pela issue #1539. O worker (lib/routing/decide.ts) e
+ * as DUAS telas que oferecem o modo (settings/atendimento e team) derivam desta
+ * lista, então acrescentar um modo aqui os atualiza sem tocar em mais nada.
+ */
+export const ROUTING_MODES = ["manual", "round_robin", "load"] as const;
 export type RoutingMode = (typeof ROUTING_MODES)[number];
 
 /**
@@ -41,8 +48,72 @@ export const routingConfigSchema = z.object({
     .max(PRAZO_MAX_MINUTOS)
     .nullable()
     .default(null),
+  /**
+   * Quantos minutos a IA fica calada numa conversa depois que alguém da equipe
+   * responde por FORA do CRM (pelo celular, no próprio aplicativo do canal).
+   * `null` = o padrão de 60 min. Cada nova resposta à mão renova o prazo. Quem
+   * lê é `lerPrazoDoSilencioManualMinutos` (`lib/escalacao/atendimento-manual.ts`),
+   * que trata ausente/fora da faixa como 60. Nasceu do diagnóstico de
+   * @gaberaldo-svg (#2005): a clínica que atende o dia inteiro pelo celular
+   * renovava os 60 min a cada fala, e a IA não respondia ninguém o dia todo.
+   */
+  manual_reply_silence_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .default(null),
+  /**
+   * Prazo, em minutos, para DEVOLVER AO RODÍZIO a conversa que o rodízio
+   * entregou e ninguém respondeu (issue #2985, fatia 1). `null` = desligado — o
+   * padrão, para quem já instalou não ver o comportamento mudar. Ligado, o cron
+   * `rodizio-devolucao` solta o dono da conversa entregue por `routing` sem
+   * nenhuma mensagem humana (`sent_via` `user` ou `external_device`) e devolve a
+   * conversa à distribuição; a pessoa devolvida fica fora DESTA conversa por
+   * 24 h. A regra pura está em `lib/escalacao/devolucao-ao-rodizio.ts`, e a
+   * faixa (5 min – 24 h) é a MESMA da devolução ao agente.
+   *
+   * A string nova de i18n não existe de propósito: esta fatia não tem tela (é a
+   * fatia 2) nem aviso (fatia 3) — nenhum texto novo chega ao usuário.
+   */
+  unanswered_return_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .default(null),
+  /**
+   * "A conversa fica com quem atendeu" (ideia de @gustavorodcruz96, #1527).
+   * Desligado = o comportamento de sempre: a resposta humana cala a IA por
+   * alguns minutos e a conversa encerrada que recebe mensagem nova volta para a
+   * fila e para o roteamento. Ligado: responder pelo Inbox numa conversa sem
+   * dono a assume (a IA fica calada até alguém devolver), e a conversa
+   * encerrada volta direto para o último atendente, se ele ainda é da equipe.
+   *
+   * ⚠️ O BANCO LÊ ESTE CAMINHO EXATO: `fn_service_inbound` (migration 0396)
+   * compara `settings->'routing'->'conversation_stays_with_attendant'` com o
+   * booleano `true`. Renomear ou mover a chave desliga a reabertura em silêncio.
+   * No TypeScript, quem lê é `conversaFicaComQuemAtendeu()`, com a mesma régua.
+   */
+  conversation_stays_with_attendant: z.boolean().default(false),
 });
 export type RoutingConfig = z.infer<typeof routingConfigSchema>;
+
+/**
+ * Lê o ajuste "a conversa fica com quem atendeu" sem nunca lançar.
+ *
+ * A régua é a MESMA do banco: só o booleano `true` liga. Qualquer outra coisa
+ * (chave ausente, `"true"` em texto, outra chave de `routing` inválida ao lado)
+ * é desligado — o padrão de toda empresa que nunca abriu a tela.
+ */
+export function conversaFicaComQuemAtendeu(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object") return false;
+  const routing = (settings as Record<string, unknown>).routing;
+  if (!routing || typeof routing !== "object") return false;
+  return (routing as Record<string, unknown>).conversation_stays_with_attendant === true;
+}
 
 /**
  * `organizations.settings.visibility_mode` — o escopo de leitura do role
@@ -53,10 +124,11 @@ export type RoutingConfig = z.infer<typeof routingConfigSchema>;
  * esse caminho exato. Aninhar aqui por arrumação quebraria a RLS em silêncio.
  *
  * O tipo canônico é o de `lib/auth/types.ts` (usado pelo layout e pelo inbox);
- * aqui só se declara a validação do input externo. A `satisfies` abaixo é o que
- * impede as duas listas de divergirem sem ninguém notar.
+ * aqui só se declara a VALIDAÇÃO do input externo, a partir da MESMA lista — a
+ * lista literal morava nos dois arquivos e um teste comparava array com array
+ * para impedir que divergissem. Agora não há o que divergir.
  */
-export const VISIBILITY_MODES = ["all", "own_and_unassigned", "own"] as const;
+export const VISIBILITY_MODES = MODOS_DE_VISIBILIDADE;
 export type VisibilityModeInput = (typeof VISIBILITY_MODES)[number];
 
 /**
@@ -81,6 +153,28 @@ export const atendimentoConfigPatchSchema = routingConfigSchema.extend({
     .max(PRAZO_MAX_MINUTOS)
     .nullable()
     .optional(),
+  /** Opcional pela mesma razão: cliente antigo não desliga o ajuste por omissão. */
+  conversation_stays_with_attendant: z.boolean().optional(),
+  /** Opcional pela mesma razão: cliente antigo não volta o prazo para 60 por omissão. */
+  manual_reply_silence_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .optional(),
+  /**
+   * Opcional pela mesma razão: cliente antigo que só conhece o modo de
+   * roteamento não pode LIGAR a devolução ao rodízio por omissão. Omitido
+   * preserva o que já valia (o padrão é `null`, desligado).
+   */
+  unanswered_return_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .optional(),
 });
 export type AtendimentoConfigPatch = z.infer<typeof atendimentoConfigPatchSchema>;
 
@@ -91,7 +185,8 @@ export type AtendimentoConfigPatch = z.infer<typeof atendimentoConfigPatchSchema
  *
  * Merge não-destrutivo em DOIS níveis: preserva as demais chaves de `settings`
  * (o provedor de IA mora nele) e, para o que veio OMITIDO do corpo —
- * `visibility_mode` e `handoff_return_after_minutes` —, preserva o que já
+ * `visibility_mode`, `handoff_return_after_minutes`, `conversation_stays_with_attendant`,
+ * `manual_reply_silence_minutes` e `unanswered_return_minutes` —, preserva o que já
  * valia. Um cliente antigo, que só conhece o modo de roteamento, não pode
  * desligar a restrição de visibilidade nem a devolução automática por omissão.
  */
@@ -99,7 +194,14 @@ export function mesclarSettingsDeAtendimento(
   atual: Record<string, unknown>,
   input: AtendimentoConfigPatch,
 ): { settings: Record<string, unknown>; routing: RoutingConfig } {
-  const { visibility_mode, handoff_return_after_minutes, ...routingInput } = input;
+  const {
+    visibility_mode,
+    handoff_return_after_minutes,
+    conversation_stays_with_attendant,
+    manual_reply_silence_minutes,
+    unanswered_return_minutes,
+    ...routingInput
+  } = input;
   const routingAtual = routingConfigSchema
     .catch(routingConfigSchema.parse({}))
     .parse(atual.routing ?? {});
@@ -109,6 +211,16 @@ export function mesclarSettingsDeAtendimento(
       handoff_return_after_minutes !== undefined
         ? handoff_return_after_minutes
         : routingAtual.handoff_return_after_minutes,
+    conversation_stays_with_attendant:
+      conversation_stays_with_attendant ?? routingAtual.conversation_stays_with_attendant,
+    manual_reply_silence_minutes:
+      manual_reply_silence_minutes !== undefined
+        ? manual_reply_silence_minutes
+        : routingAtual.manual_reply_silence_minutes,
+    unanswered_return_minutes:
+      unanswered_return_minutes !== undefined
+        ? unanswered_return_minutes
+        : routingAtual.unanswered_return_minutes,
   };
   const settings: Record<string, unknown> = { ...atual, routing };
   if (visibility_mode !== undefined) settings.visibility_mode = visibility_mode;
@@ -167,8 +279,17 @@ export const availabilityPatchSchema = z
   });
 export type AvailabilityPatch = z.infer<typeof availabilityPatchSchema>;
 
+/**
+ * Corpo do PATCH de `/api/v1/settings/routing/channels` (regras POR NÚMERO,
+ * issue #2331). `distribution_mode` e `default_assignee_user_id` são OPCIONAIS:
+ * a tela que só mexe nos responsáveis continua mandando o mesmo corpo, e o
+ * número fica sem regra própria (herda a organização). `null` explícito é
+ * diferente de omitir na chamada da RPC — a tela manda sempre o que quer gravar.
+ */
 export const channelRoutingPatchSchema = z.object({
   channel_session_id: z.string().uuid(),
   user_ids: z.array(z.string().uuid()).max(1000),
   reset: z.boolean().default(false),
+  distribution_mode: z.enum(ROUTING_MODES).nullable().optional(),
+  default_assignee_user_id: z.string().uuid().nullable().optional(),
 }).strict();

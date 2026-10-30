@@ -1,9 +1,10 @@
 import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { ehVistoAzul } from "../support/waha-visto-azul";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
-import { test, expect, type Page, type TestInfo } from "@playwright/test";
+import { test, expect, type Page, type TestInfo } from "./helpers/test";
 import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 import { reconcileAppointment } from "../../lib/agenda/google/sync-executor";
 import { createMeetDeliveryHandler } from "../../lib/agent-engine/agent/meet-delivery";
@@ -166,7 +167,7 @@ async function login(page: Page, f: Fixture) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(f.email);
   await page.getByLabel(/senha/i).fill(password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(?:\/|$)/, { timeout: 60_000 });
 }
 async function book(page: Page, f: Fixture) {
@@ -356,6 +357,10 @@ async function deliveryReceiver() {
   const target = new URL(process.env.WAHA_API_BASE_URL!);
   expect(["127.0.0.1", "localhost"]).toContain(target.hostname);
   const server = createServer(async (req, res) => {
+    if (ehVistoAzul(req.url)) {
+      res.end("{}");
+      return;
+    }
     let raw = "";
     for await (const chunk of req) raw += String(chunk);
     bodies.push(JSON.parse(raw));
@@ -497,8 +502,15 @@ test("marca Meet, copia link, autoriza em atendimento humano e entrega novamente
     expect(oldJob).toHaveLength(1);
     expect(oldJob[0]).toMatchObject({ id: firstJob, organization_id: f.org, contact_id: f.contact, kind: "transactional_delivery", status: "done" });
     await page.goto(`/app/inbox/${f.conversation}`);
-    page.on("dialog", (dialog) => dialog.accept());
+    // Fechar não é mais `window.confirm()` (bloqueado em iframe, ignora o
+    // tema) — é o `AlertDialog` da casa. O botão que abre e o que confirma
+    // têm o MESMO rótulo "Fechar"; o segundo clique escopado ao
+    // `alertdialog` é o que desambigua.
     await page.getByRole("button", { name: "Fechar", exact: true }).click();
+    await page
+      .getByRole("alertdialog")
+      .getByRole("button", { name: "Fechar", exact: true })
+      .click();
     await expect
       .poll(
         async () =>

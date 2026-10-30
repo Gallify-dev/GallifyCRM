@@ -9,13 +9,22 @@ import { combinarInterfaces } from "@/lib/navigation/interface";
  * and then filter by `user_id` (a trusted source).
  */
 import { readSupportContext } from "@/lib/impersonate/support";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import { agindoPeloPoderDePlataforma } from "@/lib/auth/poder-de-plataforma";
 import { redirect } from "next/navigation";
+import { safeNext } from "@/lib/auth/safe-next";
 import { logger } from "@/lib/logger";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { empresaExigeMfa, exigeCadastroDeMfa } from "@/lib/auth/politica-mfa";
+import {
+  empresaExigeMfa,
+  avaliaPoliticaDeMfa,
+  politicaDaEmpresa,
+  type ExigenciaDeMfa,
+  type PapelMinimoDeMfa,
+} from "@/lib/auth/politica-mfa";
 import { normalizarIdioma } from "@/lib/i18n/idiomas";
+import { STATUS_OPERANTE, ehOperante } from "@/lib/organizacao/operante";
 import type { AuthUser, Role, UserOrgMembership, ActiveOrg } from "./types";
 
 const ACTIVE_ORG_COOKIE = "active_org";
@@ -41,6 +50,10 @@ interface OrgJoin {
   display_name: string;
   locale: string | null;
   timezone: string | null;
+  currency: string | null;
+  country: string | null;
+  status?: string;
+  suspended_kind?: string | null;
 }
 
 /** O mesmo `organizations`, alcançado por outro embed: só as portas da EMPRESA. */
@@ -77,10 +90,14 @@ function escolherMembroAtivo(
 ): UserOrgMembership | null {
   if (memberships.length === 0) return null;
   if (cookieOrg) {
+    // Com cookie, MANTÉM mesmo a suspensa: é por ela que a pessoa chega ao hub
+    // `/account-suspended` para pagar, pedir LGPD ou trocar de empresa.
     const achado = memberships.find((o) => o.organization_id === cookieOrg);
     if (achado) return achado;
   }
-  return memberships[0] ?? null;
+  // Sem cookie, a primeira OPERANTE na mesma ordem (`accepted_at`,
+  // `organization_id`); a primeira de todas só quando nenhuma opera.
+  return memberships.find((o) => ehOperante(o.org_status)) ?? memberships[0] ?? null;
 }
 
 /**
@@ -119,12 +136,33 @@ export function ehSessaoAusente(error: { name?: string } | null | undefined): bo
   return error?.name === "AuthSessionMissingError";
 }
 
-export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
+/**
+ * O `getUser()` da requisição: UMA ida ao servidor de autenticação, partilhada
+ * por `loadAuthUser` e `isMfaEnrolled`.
+ *
+ * Cada tela de `/app` pedia o usuário ao GoTrue duas vezes — uma aqui, outra
+ * dentro do `listFactors()` do auth-js, que chama `getUser()` pela rede e só
+ * filtra `user.factors`. A resposta é a mesma; a segunda ida era uma espera a
+ * mais (e uma linha a mais no log do Supabase) em toda tela.
+ *
+ * O CLIENTE vai junto com a resposta, e não por enfeite: se o `getUser`
+ * renovou o token, é este cliente que tem o token novo — as consultas de
+ * `loadAuthUser` precisam sair dele, como sempre saíram.
+ */
+const sessaoDaRequisicao = cache(async () => {
   const supabase = await createClient();
+  const resposta = await supabase.auth.getUser();
+  return { supabase, resposta };
+});
+
+export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
   const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+    supabase,
+    resposta: {
+      data: { user },
+      error,
+    },
+  } = await sessaoDaRequisicao();
   // ⚠️ O `error` era DESCARTADO — nem chegava a ser desestruturado —, e aqui
   // `user: null` é tão ambíguo quanto o `data: null` que a query logo abaixo
   // trata com todo o cuidado: significa "não está logado" (estado normal) E
@@ -169,11 +207,20 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
   // ⚠️ `ORDER BY` NÃO É ENFEITE AQUI: esta lista decide QUAL ORGANIZAÇÃO FICA
   // ATIVA para quem não tem o cookie `active_org` — `resolveActiveOrg` pega
   // `organizations[0]`. Sem ordenação, "a primeira" é o que o Postgres devolver.
-  const [{ data: paRow, error: paErro }, { data: rawMemberships, error: membErro }] =
-    await Promise.all([
+  //
+  // O contexto de acompanhamento entra no MESMO lote: a RPC depende só do JWT,
+  // que já foi validado pelo `getUser` acima, e não do resultado das duas
+  // consultas. Em fila, ela somava mais uma ida ao banco a TODA tela de `/app`.
+  // A falha dela continua lançando, e DEPOIS da checagem das permissões, como
+  // antes: por isso ela é capturada aqui e relançada lá embaixo.
+  const [
+    { data: paRow, error: paErro },
+    { data: rawMemberships, error: membErro },
+    leituraDoSuporte,
+  ] = await Promise.all([
       supabase
         .from("platform_admins")
-        .select("user_id, revoked_at")
+        .select("user_id, scope, revoked_at")
         .eq("user_id", user.id)
         .is("revoked_at", null)
         .maybeSingle(),
@@ -187,12 +234,16 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
           // issue #1341 acabou de engordar), e o alias traz só as portas da EMPRESA.
           // `timezone` veio do main (fuso da organização nas listas, #1290) e convive
           // com o alias: um embed por relação, sem renomear o que já existia.
-          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, timezone), interface_da_empresa:organizations(interface_settings)",
+          "organization_id, role, interface_settings, accepted_at, organizations!user_organizations_organization_id_fkey(display_name, locale, timezone, currency, country, status, suspended_kind), interface_da_empresa:organizations!user_organizations_organization_id_fkey(interface_settings)",
         )
         .eq("user_id", user.id)
         .is("revoked_at", null)
         .order("accepted_at", { ascending: true, nullsFirst: true })
         .order("organization_id", { ascending: true }),
+      readSupportContext(supabase).then(
+        (contexto) => ({ ok: true as const, contexto }),
+        (erro: unknown) => ({ ok: false as const, erro }),
+      ),
     ]);
 
   /**
@@ -243,10 +294,15 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
       interface_settings: combinarInterfaces(empresa?.interface_settings, row.interface_settings),
       locale: org?.locale ?? null,
       timezone: org?.timezone ?? null,
+      currency: org?.currency ?? null,
+      country: org?.country ?? null,
+      org_status: org?.status ?? null,
+      suspended_kind: org?.suspended_kind ?? null,
     };
   });
 
-  const support = await readSupportContext(supabase);
+  if (!leituraDoSuporte.ok) throw leituraDoSuporte.erro;
+  const support = leituraDoSuporte.contexto;
   const fullName = (user.user_metadata?.full_name as string | undefined) ?? null;
   const avatarUrl = (user.user_metadata?.avatar_url as string | undefined) ?? null;
   const locale = (user.user_metadata?.locale as string | undefined) ?? null;
@@ -268,6 +324,7 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
     full_name: fullName,
     avatar_url: avatarUrl,
     is_platform_admin: !!paRow,
+    platform_admin_scope: paRow?.scope ?? null,
     locale,
     idioma,
     timezone,
@@ -277,17 +334,42 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
 });
 
 /**
- * Resolves the active organization for the current request.
- * Priority: cookie `active_org` (if member of) → first membership.
- * Returns null if user has zero memberships.
+ * A organização ativa SEM o portão de suspensão — o corpo que `resolveActiveOrg`
+ * tinha até a spec da cobrança (§4, item 3).
+ *
+ * Só para quem PRECISA enxergar a org parada: `requireRole` (responde 403
+ * `org_suspended` em JSON, não 307), o hub `/account-suspended`, leitura que não
+ * pode sumir para o suspenso (`lib/legal/operador.ts`) e o início de um
+ * acompanhamento, que só guarda para onde voltar (`admin/tenants/[id]/impersonate`).
+ * Rota de API usa `orgAtivaDaApi` (lib/auth/require-role.ts: 403 JSON); o resto,
+ * `resolveActiveOrg`.
  */
-export const resolveActiveOrg = cache(async (authUser: AuthUser): Promise<ActiveOrg | null> => {
+export const orgAtivaSemPortao = cache(async (authUser: AuthUser): Promise<ActiveOrg | null> => {
   if (authUser.support) {
     if (authUser.support.status !== "active") redirect("/support-ended");
+    // Acompanhamento não tem membership, e era por isso que este caminho
+    // devolvia a organização PELADA: sem fuso, e agora sem moeda nem país. A
+    // tela então caía nos padrões e mostrava `R$` dentro de uma empresa em
+    // euro — o mesmo defeito que este conserto ataca, por outra porta. Uma
+    // leitura por id, só nas sessões de acompanhamento; falha degrada para o
+    // que havia antes, porque perder o acesso de suporte é pior que um símbolo
+    // errado.
+    const { data: orgDoSuporte } = await createAdminClient()
+      .from("organizations")
+      .select("timezone, currency, country")
+      .eq("id", authUser.support.organization_id)
+      .maybeSingle();
     return {
       orgId: authUser.support.organization_id,
       name: authUser.support.name,
       role: authUser.support.access_mode === "full" ? "admin" : "viewer",
+      timezone: orgDoSuporte?.timezone ?? null,
+      currency: orgDoSuporte?.currency ?? null,
+      country: orgDoSuporte?.country ?? null,
+      // `fn_support_context` só devolve status 'active' com a org em 'active'
+      // (`o.status <> 'active'` vira 'revoked'), e a linha acima já saiu.
+      org_status: STATUS_OPERANTE,
+      suspended_kind: null,
     };
   }
   const store = await cookies();
@@ -299,7 +381,27 @@ export const resolveActiveOrg = cache(async (authUser: AuthUser): Promise<Active
     role: ativo.role,
     interface_settings: ativo.interface_settings,
     timezone: ativo.timezone ?? null,
+    currency: ativo.currency ?? null,
+    country: ativo.country ?? null,
+    org_status: ativo.org_status ?? null,
+    suspended_kind: ativo.suspended_kind ?? null,
   };
+});
+
+/**
+ * Resolves the active organization for the current request.
+ * Priority: cookie `active_org` (if member of) → first OPERANT membership → first.
+ * Returns null if user has zero memberships.
+ *
+ * Org NÃO operante redireciona para `/account-suspended` (mesmo precedente do
+ * `/support-ended`). É isto que fecha páginas, layouts e server actions de uma vez.
+ * NUNCA em rota de API (`app/api/**`): o `fetch` seguiria o 307 para HTML — lá
+ * é `orgAtivaDaApi` (cerca `tests/unit/api-nao-redireciona-org-suspensa.test.ts`).
+ */
+export const resolveActiveOrg = cache(async (authUser: AuthUser): Promise<ActiveOrg | null> => {
+  const org = await orgAtivaSemPortao(authUser);
+  if (org && !ehOperante(org.org_status)) redirect("/account-suspended");
+  return org;
 });
 
 /**
@@ -315,30 +417,123 @@ export async function requireAuth(): Promise<AuthUser> {
 /**
  * Returns true if the current session has at least one verified TOTP factor.
  * Use only in Server Components / Server Actions (cookie session).
+ *
+ * LANÇA quando não conseguiu ler os fatores. O `getUser()` do auth-js não
+ * lança: se falhar, ele DEVOLVE `{ data: { user: null }, error }`. Ler só
+ * `data` transformava essa falha em "não tem fator" — e `mfaEmDivida` liberava
+ * a sessão `aal1` de quem TEM fator. Uma leitura que não aconteceu não pode
+ * virar resposta: quem decide acesso falha fechado (a exceção vira 500 na rota,
+ * nunca 200).
+ *
+ * Lê `user.factors` da MESMA ida ao GoTrue que `loadAuthUser` já fez
+ * (`sessaoDaRequisicao`), com a regra do `listFactors()` do auth-js 2.117:
+ * fator `totp` com `status === "verified"`.
  */
 export const isMfaEnrolled = cache(async (): Promise<boolean> => {
-  const supabase = await createClient();
-  const { data } = await supabase.auth.mfa.listFactors();
-  return !!data?.totp?.some((f) => f.status === "verified");
+  const {
+    resposta: { data, error },
+  } = await sessaoDaRequisicao();
+  if (error) throw error;
+  return !!data.user?.factors?.some((f) => f.factor_type === "totp" && f.status === "verified");
 });
 
 /**
- * Quem é OBRIGADO a cadastrar a verificação em duas etapas.
+ * A política de CADASTRO completa para quem está na tela — as três saídas de
+ * `avaliaPoliticaDeMfa` (`lib/auth/politica-mfa.ts`).
+ *
+ * As duas leituras vêm daqui porque o layout precisa delas de qualquer forma;
+ * quem já tem a política em mãos deve chamar `avaliaPoliticaDeMfa` direto.
+ *
+ * A carência (`mfa_grace_days`) só é resolvida quando ela existe: a âncora é
+ * `max(mfa_policy_changed_at, user_organizations.accepted_at)`, e buscar o
+ * `accepted_at` de todo mundo custaria uma consulta em TODA requisição para
+ * resolver um caso que a grande maioria das instalações não tem.
+ */
+export const exigenciaDeMfa = cache(
+  async (
+    role: Role | undefined,
+    isPlatformAdmin: boolean,
+    userId?: string,
+    orgId?: string,
+  ): Promise<ExigenciaDeMfa> => {
+    const admin = createAdminClient();
+
+    // As duas políticas são independentes — a da plataforma e a da empresa —, e
+    // por isso são lidas JUNTAS. Em fila, o dono da instalação (que é platform
+    // admin) pagava duas idas ao banco a cada tela de `/app`.
+    const [linhaDaPlataforma, linhaDaEmpresa] = await Promise.all([
+      isPlatformAdmin && userId
+        ? admin
+            .from("platform_admins")
+            .select("mfa_required")
+            .eq("user_id", userId)
+            .is("revoked_at", null)
+            .maybeSingle()
+        : null,
+      orgId ? admin.from("organizations").select("settings").eq("id", orgId).maybeSingle() : null,
+    ]);
+
+    let plataformaExige: boolean | null = null;
+    if (linhaDaPlataforma) {
+      plataformaExige = (linhaDaPlataforma.data?.mfa_required as boolean | undefined) ?? null;
+    }
+
+    let empresaExige = false;
+    let papelMinimo: PapelMinimoDeMfa | null = null;
+    let diasDeCarencia = 0;
+    let mudouEm: Date | null = null;
+    let aceitoEm: string | null = null;
+    if (orgId && linhaDaEmpresa) {
+      const { data } = linhaDaEmpresa;
+      empresaExige = empresaExigeMfa(data?.settings);
+      const cfg = politicaDaEmpresa(data?.settings);
+      papelMinimo = cfg.papelMinimo;
+      diasDeCarencia = cfg.diasDeCarencia;
+      mudouEm = cfg.mudouEm;
+
+      if (userId && diasDeCarencia > 0) {
+        const { data: vinculo } = await admin
+          .from("user_organizations")
+          .select("accepted_at")
+          .eq("organization_id", orgId)
+          .eq("user_id", userId)
+          .maybeSingle();
+        aceitoEm = (vinculo?.accepted_at as string | null | undefined) ?? null;
+      }
+    }
+
+    return avaliaPoliticaDeMfa({
+      role,
+      isPlatformAdmin,
+      plataformaExige,
+      empresaExige,
+      papelMinimo,
+      diasDeCarencia,
+      mudouEm,
+      aceitoEm,
+    });
+  },
+);
+
+/**
+ * Quem é OBRIGADO A CADASTRAR a verificação em duas etapas.
  *
  * ⚠️ ISTO DEIXOU DE SER UMA CONSTANTE. A regra era
- * `isPlatformAdmin || role === "admin"` — sem opção —, e como o `install.sh`
+ * `isPlatformAdmin || role === "admin"`, sem opção —, e como o `install.sh`
  * cria o dono da instalação como platform admin, TODA instalação self-host
  * forçava TOTP antes de a pessoa usar o produto. Medido percorrendo o wizard: o
  * botão "Começar a usar" entregava o dono num bloqueador de tela cheia, um
  * sétimo passo que a barra de progresso nunca anunciou.
  *
  * Agora a resposta vem da POLÍTICA — `platform_admins.mfa_required` para o
- * platform admin, `organizations.settings.security.mfa_required` para o admin do
- * tenant —, e o padrão de ambos é não exigir. A regra pura, com o porquê de cada
- * ramo, vive em `lib/auth/politica-mfa.ts`.
+ * platform admin, `organizations.settings.security.mfa_required` /
+ * `.mfa_required_min_role` para o tenant —, e o padrão de ambos é não exigir. A
+ * regra pura, com o porquê de cada ramo, vive em `lib/auth/politica-mfa.ts`.
  *
- * Carrega as duas leituras porque o layout precisa delas de qualquer forma; quem
- * já tem a política em mãos deve chamar `exigeCadastroDeMfa` direto.
+ * O booleano que este retorno devolve é o de BLOQUEIO (`bloqueia`), não o de
+ * obrigação: é ele que o layout do `/app` transforma no `MfaEnrollGate` de tela
+ * cheia, e durante a carência (`mfa_grace_days`) a pessoa já está obrigada mas a
+ * tela ainda não pode travar. Quem precisa da distinção chama `exigenciaDeMfa`.
  */
 export const requiresMfa = cache(
   async (
@@ -346,32 +541,7 @@ export const requiresMfa = cache(
     isPlatformAdmin: boolean,
     userId?: string,
     orgId?: string,
-  ): Promise<boolean> => {
-    const admin = createAdminClient();
-
-    let plataformaExige: boolean | null = null;
-    if (isPlatformAdmin && userId) {
-      const { data } = await admin
-        .from("platform_admins")
-        .select("mfa_required")
-        .eq("user_id", userId)
-        .is("revoked_at", null)
-        .maybeSingle();
-      plataformaExige = (data?.mfa_required as boolean | undefined) ?? null;
-    }
-
-    let empresaExige = false;
-    if (orgId) {
-      const { data } = await admin
-        .from("organizations")
-        .select("settings")
-        .eq("id", orgId)
-        .maybeSingle();
-      empresaExige = empresaExigeMfa(data?.settings);
-    }
-
-    return exigeCadastroDeMfa({ role, isPlatformAdmin, plataformaExige, empresaExige });
-  },
+  ): Promise<boolean> => (await exigenciaDeMfa(role, isPlatformAdmin, userId, orgId)).bloqueia,
 );
 
 /**
@@ -411,5 +581,55 @@ export async function mfaEmDivida(): Promise<boolean> {
   //
   // Cadastrar e provar são perguntas diferentes. Quem TEM fator prova, sempre.
   if (!(await isMfaEnrolled())) return false;
+  if ((await sessionAal()) === "aal2") return false;
+  if (await agindoPeloPoderDePlataforma()) return true;
+  // `aal1` com fator: só o banco sabe se esta sessão foi reconhecida por um
+  // dispositivo confiável (`lib/auth/dispositivo-confiavel.ts`). Pergunta à
+  // MESMA função que as definer cobram, para app e banco não divergirem — e
+  // falha fechado: leitura que não aconteceu não vira "provada".
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("fn_session_mfa_proven");
+  if (error) throw error;
+  return data !== true;
+}
+
+/**
+ * A mesma dívida, SEM aceitar dispositivo confiável: quem tem fator precisa do
+ * `aal2` do GoTrue, o código provado nesta sessão. É a régua das rotas da
+ * PLATAFORMA cuja organização vem do path (`/admin/**`, extensões da
+ * instalação), onde a organização ativa não diz nada sobre o alvo.
+ */
+export async function mfaEmDividaEstrita(): Promise<boolean> {
+  if (!(await isMfaEnrolled())) return false;
   return (await sessionAal()) !== "aal2";
+}
+
+/**
+ * O portão de SESSÃO das telas: quem tem fator e não o provou nesta sessão vai
+ * ao desafio, de volta para onde estava. É a mesma pergunta das rotas
+ * (`mfaEmDivida`), para que a tela e as rotas por trás dela respondam igual.
+ *
+ * A régua é a BRANDA de propósito: dispositivo confiável vale em `/app` — com
+ * `mfaEmDividaEstrita` aqui, confiar no dispositivo não teria efeito nenhum. Quem
+ * age pelo poder de plataforma segue devendo o código (`mfaEmDivida` decide), e o
+ * `/admin` tem portão próprio, que exige o `aal2` (`requirePlatformAdmin`).
+ *
+ * Custo: sem fator, ou com `aal2`, nada de novo (`isMfaEnrolled` é `cache` da
+ * requisição e o layout já a pediu; `sessionAal` lê o token). Sessão `aal1` COM
+ * fator faz duas leituras a mais: a org ativa, via `agindoPeloPoderDePlataforma`,
+ * que roda antes para todo platform admin, e o rpc `fn_session_mfa_proven`.
+ * Falha ao ler os fatores LANÇA (o `isMfaEnrolled`), como nas rotas — nenhuma tela
+ * renderiza; erro do rpc também lança.
+ *
+ * `regua`: a tela cujas ações usam a régua ESTRITA (as da instalação em `/app`:
+ * extensões, servidor MCP externo) passa `mfaEmDividaEstrita`. Sem isso, quem
+ * entrou pelo dispositivo confiável abria a tela e recebia `mfa_required` em
+ * toda ação — e entrar de novo não pedia o código.
+ */
+export async function exigirProvaDeMfa(regua: () => Promise<boolean> = mfaEmDivida): Promise<void> {
+  if (!(await regua())) return;
+  // `x-pathname` vem do `proxy.ts`, gravado ANTES do `NextResponse.next` — só o
+  // que existe ali chega aqui (tests/unit/proxy-encaminha-o-caminho.test.ts).
+  const caminho = safeNext((await headers()).get("x-pathname"), "/app");
+  redirect(`/login/mfa?next=${encodeURIComponent(caminho)}`);
 }

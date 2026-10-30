@@ -1,3 +1,8 @@
+import { guardServiceEffect } from "@/lib/atendimento/fronteira-server";
+import { currentExecutionBoundary } from "@/lib/atendimento/fronteira-server";
+import { atualizarFontesDoServico } from "@/lib/agenda/servicos/consulta";
+import { execucaoDoServico, reciboDoServico, rpcDoServico } from "@/lib/agenda/servicos/escrita";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { randomUUID } from "node:crypto";
 import type { Json } from "@/lib/database.types";
 /**
@@ -23,6 +28,11 @@ import type { Json } from "@/lib/database.types";
  * A recusa sai como `ApiError`: a rota a traduz em `fail()`, a tool a traduz
  * para o modelo, e nenhum dos dois reimplementa a decisão.
  */
+import {
+  payloadDoAviso,
+  type RecorteDoCompromisso,
+  type TipoDoAtendimento,
+} from "@/lib/agenda/aviso-do-compromisso";
 import { coletaOQueOcupa, horariosLivresDaOrg } from "@/lib/agenda/consulta";
 import { colide } from "@/lib/agenda/horarios-livres";
 import {
@@ -39,6 +49,7 @@ import {
   VINCULO_DE_AGENDAMENTO,
 } from "@/lib/agenda/tipos";
 import { ApiError } from "@/lib/api/types";
+import { comIdempotencia, hashDoCorpo } from "@/lib/api/idempotency";
 import type { Actor, HandlerCtx } from "@/lib/api/handlers/types";
 import { audit } from "@/lib/audit";
 import { roleAtLeast } from "@/lib/auth/types";
@@ -90,6 +101,9 @@ export interface MarcarInput {
    * é o worker de push.
    */
   guest_email?: string;
+  participant_name?: string;
+  participants?: string[];
+  expected_service_revision?: number;
 }
 
 export interface AlterarInput {
@@ -226,6 +240,8 @@ async function exigeDonoDoCompromisso(
   ctx: HandlerCtx,
   atual: Record<string, unknown>,
 ): Promise<void> {
+  // Serviço coletivo sem profissional é uma agenda da equipe, não a agenda privada de um colega.
+  if (atual.service_occurrence_id && atual.owner_user_id === null) return;
   const ehDono = ctx.actor.type === "user" && atual.owner_user_id === ctx.actor.id;
   if (!aOpcaoPodeRecortar(ctx.actor, ehDono)) return;
   const ligada = await colegasPodemMexerNaAgenda(supabase, ctx);
@@ -233,7 +249,67 @@ async function exigeDonoDoCompromisso(
   throw new ApiError(403, "appointment_do_colega", undefined, ctx.requestId, RECUSA_DO_COLEGA);
 }
 
+const ENDPOINT_IDEMPOTENCIA_AGENDA = "/api/v1/agenda/agendamentos";
+
+/**
+ * Cria o recibo no handler compartilhado, onde REST e MCP chegam ao mesmo
+ * efeito persistente. Requests externos fornecem a chave pelo header; o
+ * runtime interno deriva uma chave estável do job e do input validado. Claim
+ * muda a cada reclaim e boundary delimita autorização, por isso nenhum dos dois
+ * identifica a operação.
+ */
 export async function marcarAgendamentoHandler(
+  supabase: SB,
+  ctx: HandlerCtx,
+  input: MarcarInput,
+): Promise<Record<string, unknown>> {
+  const chave =
+    ctx.idempotencyKey ??
+    (ctx.sourceJobId ? `agent-job:${ctx.sourceJobId}:${hashDoCorpo(input)}` : null);
+  if (chave === null) return executarCriacaoDeAgendamento(supabase, ctx, input);
+
+  const desfecho = await comIdempotencia({
+    db: supabase,
+    organizationId: ctx.organization_id,
+    endpoint: ENDPOINT_IDEMPOTENCIA_AGENDA,
+    chave,
+    corpo: input,
+    executar: async () => ({
+      resposta: await executarCriacaoDeAgendamento(supabase, ctx, input),
+      status: 201,
+    }),
+  });
+
+  if (desfecho.tipo === "conflito") {
+    throw new ApiError(
+      409,
+      "idempotency_conflict",
+      undefined,
+      ctx.requestId,
+      "Esta chave de idempotência já foi usada com outro conteúdo.",
+    );
+  }
+  if (desfecho.tipo === "em_curso") {
+    throw new ApiError(
+      409,
+      "idempotency_in_progress",
+      undefined,
+      ctx.requestId,
+      "A mesma requisição ainda está em curso. Tente de novo em instantes.",
+    );
+  }
+  if (desfecho.tipo === "replay" && desfecho.resposta.service_occurrence_id) {
+    const receipts = Array.isArray(desfecho.resposta.appointments) ? desfecho.resposta.appointments as Record<string, unknown>[] : [desfecho.resposta];
+    const { data: rows, error } = await supabase.from("calendar_appointments").select("*")
+      .eq("organization_id", ctx.organization_id).in("id", receipts.map((r) => String(r.id)));
+    if (error || !rows || rows.length !== receipts.length) throw new ApiError(409, "conflict", undefined, ctx.requestId, "O recibo mudou. Consulte as reservas atuais antes de continuar.");
+    const current = rows.map((row) => reciboDoServico({ ...row, deduplicated: true }));
+    return { ...current[0], ...(Array.isArray(desfecho.resposta.appointments) ? { appointments: current } : {}) };
+  }
+  return desfecho.resposta;
+}
+
+async function executarCriacaoDeAgendamento(
   supabase: SB,
   ctx: HandlerCtx,
   input: MarcarInput,
@@ -243,7 +319,7 @@ export async function marcarAgendamentoHandler(
   const { data: tipo, error: erroTipo } = await supabase
     .from("calendar_event_types")
     .select(
-      "id, name, is_active, duration_minutes, default_owner_user_id, requires_confirmation, location_kind, location_details",
+      "id, name, is_active, duration_minutes, default_owner_user_id, requires_confirmation, location_kind, location_details, service_enabled",
     )
     .eq("organization_id", ctx.organization_id)
     .eq("id", input.event_type_id)
@@ -254,6 +330,34 @@ export async function marcarAgendamentoHandler(
   }
   if (!tipo.is_active) {
     throw new ApiError(422, "agenda_tipo_desativado", undefined, ctx.requestId, `"${tipo.name}" está desativado.`);
+  }
+
+  if (tipo.service_enabled) {
+    // Refresh de servidor explícito. A mutação humana abaixo continua pela sessão e pelo escritor nativo.
+    await atualizarFontesDoServico(ctx.actor.type === "user" ? createAdminClient() : supabase, ctx.organization_id, tipo.id, input.owner_user_id);
+    const booking = tipo.location_kind === "google_meet" ? ctx.meetingBooking : undefined;
+    if (booking && (booking.boundary.organization_id !== ctx.organization_id || booking.boundary.contact_id !== input.contact_id || ctx.actor.type !== "ai_agent"))
+      throw new ApiError(403, "forbidden", undefined, ctx.requestId, "A conversa deste atendimento mudou.");
+    await guardServiceEffect();
+    const serviceInput = { ...input, expected_revision: input.expected_service_revision,
+        operation_key: ctx.idempotencyKey ?? (ctx.sourceJobId ? `agent-job:${ctx.sourceJobId}:${hashDoCorpo(input)}` : randomUUID()),
+        conversation_id: currentExecutionBoundary()?.conversation_id ?? input.conversation_id ?? null,
+        meeting_delivery: booking ? { state: "waiting_for_link", generation: randomUUID(), service_boundary: booking.boundary,
+          source_operation_id: booking.sourceJobId, booking_claim: booking.claim, authorized_by: { kind: ctx.actor.type, id: ctx.actor.id } } : { state: "none" } };
+    const raw = ctx.actor.type === "user"
+      ? await rpcDoServico(supabase, ctx, "fn_appointment_change", { p_id: null, p_revision: null, p_patch: { create_service_booking: serviceInput } }, false)
+      : await rpcDoServico(supabase, ctx, input.participants ? "fn_calendar_service_book_group" : "fn_calendar_service_book", { p_input: serviceInput, p_execution: execucaoDoServico() });
+    const rows = (Array.isArray(raw) ? raw : [raw]).map(reciboDoServico);
+    for (const row of rows.filter((r) => !r.deduplicated)) {
+      const transicao: Transicao = row.status === "pending" ? "pending" : "confirmed";
+      await fecharOLaco(supabase, ctx, { appointmentId: String(row.id), contactId: input.contact_id ?? null,
+        atividade: atividadeDaTransicao(null, transicao), gatilho: gatilhoDaTransicao(null, transicao), transicao,
+        fusoDoCompromisso: String(row.time_zone), nomeDoTipo: tipo.name });
+      void audit({ action: "agenda.appointment_created", actorUserId: ctx.actor.type === "user" ? ctx.actor.id : null,
+        organizationId: ctx.organization_id, resourceType: "calendar_appointment", resourceId: row.id, requestId: ctx.requestId,
+        metadata: { event_type_id: tipo.id, service: true, participant_count: rows.length } });
+    }
+    return { ...rows[0], ...(input.participants ? { appointments: rows } : {}) };
   }
 
   const donoId = input.owner_user_id ?? tipo.default_owner_user_id;
@@ -340,6 +444,8 @@ export async function marcarAgendamentoHandler(
   }
   const delivery = booking ? { state:"waiting_for_link",generation:randomUUID(),service_boundary:booking.boundary,source_operation_id:booking.sourceJobId,
     booking_claim:booking.claim,authorized_by:{kind:ctx.actor.type,id:ctx.actor.id} } : {state:"none"};
+  // A consulta pode esperar rede. Revalidar o turno depois dela, antes da escrita.
+  await guardServiceEffect();
   const { data: criado, error: erroInsert } = await supabase
     .from("calendar_appointments")
     .insert({
@@ -430,6 +536,7 @@ export async function alterarAgendamentoHandler(
     "starts_at",
     "status",
     "time_zone",
+    "service_occurrence_id",
   ]);
 
   await exigeDonoDoCompromisso(supabase, ctx, atual);
@@ -481,6 +588,10 @@ export async function alterarAgendamentoHandler(
       // REMARCAR segue a mesma assimetria de marcar (`exigeHorarioLivre`): a
       // pessoa que combinou o encaixe por fora da grade precisa poder movê-lo
       // também, senão o compromisso nasce possível e fica preso.
+      if (atual.service_occurrence_id) {
+        await atualizarFontesDoServico(ctx.actor.type === "user" ? createAdminClient() : supabase, ctx.organization_id, tipo.id, atual.owner_user_id as string | null);
+        mudanca.starts_at = novoInicio.toISOString();
+      } else {
       const consulta = await exigeHorarioLivre(supabase, ctx, {
         eventTypeId: tipo.id,
         donoId: atual.owner_user_id as string,
@@ -491,6 +602,7 @@ export async function alterarAgendamentoHandler(
       mudanca.starts_at = novoInicio.toISOString();
       mudanca.ends_at = novoFim.toISOString();
       mudanca.time_zone = consulta.fusoDaRegra;
+      }
       transicao = "rescheduled";
     }
   }
@@ -673,7 +785,7 @@ async function exigeAgendamento(
 ): Promise<Record<string, unknown>> {
   const { data, error } = await supabase
     .from("calendar_appointments")
-    .select(colunas.join(", "))
+    .select([...new Set([...colunas, "service_occurrence_id", "service_block"])].join(", "))
     .eq("organization_id", ctx.organization_id)
     .eq("id", id)
     .maybeSingle();
@@ -681,7 +793,9 @@ async function exigeAgendamento(
   if (!data) {
     throw new ApiError(404, "not_found", undefined, ctx.requestId, "Agendamento não encontrado.");
   }
-  return data as unknown as Record<string, unknown>;
+  const row = data as unknown as Record<string, unknown>;
+  if (row.service_block) throw new ApiError(403, "forbidden", undefined, ctx.requestId, "Gerencie este bloqueio em Configurações da Agenda, com seu alcance explícito.");
+  return row;
 }
 
 /**
@@ -948,19 +1062,40 @@ async function fecharOLaco(
   // organização (`fn_role_at_least`, que também cobre a sessão de suporte).
   // Serve igual aos dois chamadores — o mesmo `registraFalhaDeAtividade` logo
   // abaixo já emite assim. A organização vem do contexto autenticado.
+  // O NEGÓCIO do contato LIDO ANTES do emit — é o mesmo que a timeline vai
+  // ancorar logo abaixo, e `lead_ids` no corpo do aviso quer exatamente ele.
+  // Ler a mesma pergunta duas vezes seria uma pergunta a mais por evento.
+  const leadId = args.contactId ? await leadAtivoDoContato(supabase, ctx, args.contactId) : null;
+
   if (args.gatilho) {
+    // As linhas que o corpo do aviso carrega (#1612): o horário, a situação, o
+    // local e o tipo. A linha é LIDA AQUI, depois de gravada, e não repassada
+    // pelo chamador — `marcarAgendamento` devolve um recorte de colunas para a
+    // resposta HTTP, e confiar nele daria um payload que muda de forma conforme
+    // quem chamou. O banco é a fonte, depois da escrita.
+    const compromisso = await compromissoParaOAviso(supabase, ctx, args.appointmentId);
+    const tipo = compromisso?.event_type_id
+      ? await tipoDoCompromisso(supabase, ctx, compromisso.event_type_id)
+      : null;
+    const leadIds = await leadIdsDoCompromisso(supabase, ctx, args.appointmentId, leadId);
+
     const { error } = await supabase.rpc("emit_event", {
       p_organization_id: ctx.organization_id,
       p_event_type: args.gatilho,
       p_entity_kind: ENTIDADE_DO_AGENDAMENTO,
       p_entity_id: args.appointmentId,
-      p_payload: {
-        appointment_id: args.appointmentId,
-        contact_id: args.contactId,
-        event_type_name: args.nomeDoTipo,
-        time_zone: args.fusoDoCompromisso,
+      p_payload: payloadDoAviso({
+        appointmentId: args.appointmentId,
+        contactId: args.contactId,
         transicao: args.transicao,
-      },
+        fuso: args.fusoDoCompromisso,
+        nomeDoTipo: args.nomeDoTipo,
+        compromisso,
+        tipo,
+        leadIds,
+        // Quem fez ESTA mudança — a mesma régua da coluna `created_by_kind`.
+        autor: autorParaCriacao(ctx.actor),
+      }),
       // `request_id` sem o prefixo `rule:` de propósito: ele correlaciona com o
       // audit log e NÃO aciona o anti-loop do motor, que só barra o que uma
       // regra causou.
@@ -975,8 +1110,6 @@ async function fecharOLaco(
       });
     }
   }
-
-  const leadId = args.contactId ? await leadAtivoDoContato(supabase, ctx, args.contactId) : null;
 
   // ⚠️ ANTES do early-return de `!args.atividade`. Confirmar um agendamento
   // pendente é `atividade: null` (nada novo pra timeline — `atividadeDaTransicao`
@@ -1040,7 +1173,85 @@ async function fecharOLaco(
 }
 
 /**
- * O negócio ativo do contato — pela MESMA régua do resto do produto.
+ * O recorte da linha que o corpo do aviso carrega (#1612) — lido DEPOIS da
+  * gravação, com o filtro de organização do resto do handler.
+  *
+  * Falha não é erro: devolver `null` deixa os campos novos do payload em `null`
+  * e o evento SAI MESMO ASSIM. O aviso já existia antes destes campos; perder a
+  * emissão inteira por causa de uma coluna seria trocar um payload pobre por
+  * nenhum payload.
+  */
+ async function compromissoParaOAviso(
+   supabase: SB,
+   ctx: HandlerCtx,
+   appointmentId: string,
+ ): Promise<RecorteDoCompromisso | null> {
+   const { data } = await supabase
+     .from("calendar_appointments")
+     .select("starts_at, ends_at, status, location_kind, event_type_id")
+     .eq("organization_id", ctx.organization_id)
+     .eq("id", appointmentId)
+     .maybeSingle();
+   return (data as RecorteDoCompromisso | null) ?? null;
+ }
+
+ /**
+  * O TIPO de atendimento — `slug` e `name` de `calendar_event_types`.
+  *
+  * O `slug` entra agora no payload (#1612): é o identificador estável que
+  * renomear não muda (migration do `calendar_event_types`), e é o que um
+  * sistema do lado de fora usa para casar "Manutenção" sem depender do nome
+  * que alguém digitou. O `event_type_name` continua saindo — é o que as
+  * condições de regra existentes leem.
+  */
+ async function tipoDoCompromisso(
+   supabase: SB,
+   ctx: HandlerCtx,
+   eventTypeId: unknown,
+ ): Promise<TipoDoAtendimento | null> {
+   if (typeof eventTypeId !== "string" || !eventTypeId) return null;
+   const { data } = await supabase
+     .from("calendar_event_types")
+     .select("slug, name")
+     .eq("organization_id", ctx.organization_id)
+     .eq("id", eventTypeId)
+     .maybeSingle();
+   return (data as TipoDoAtendimento | null) ?? null;
+ }
+
+ /**
+  * Os negócios do compromisso, em `lead_ids` (#1612).
+  *
+  * Duas fontes, e as duas existem de verdade: os VÍNCULOS já gravados (um
+  * compromisso pode estar ligado a mais de um negócio) e o negócio ATIVO do
+  * contato, que no nascer do compromisso ainda não tem vínculo — o `crm_lead_links`
+  * é escrito logo abaixo, DEPOIS do emit. Sem a segunda fonte,
+  * `appointment.created` sairia sempre com a lista vazia, que é o campo mais
+  * útil de todos justamente no gatilho mais usado.
+  */
+ async function leadIdsDoCompromisso(
+   supabase: SB,
+   ctx: HandlerCtx,
+   appointmentId: string,
+   leadAtivo: string | null,
+ ): Promise<string[]> {
+   const { data } = await supabase
+     .from("crm_lead_links")
+     .select("lead_id")
+     .eq("organization_id", ctx.organization_id)
+     .eq("target_kind", ALVO_DE_VINCULO_DO_AGENDAMENTO)
+     .eq("target_id", appointmentId);
+
+   const vinculados = (Array.isArray(data) ? data : [])
+     .map((linha) => (linha as { lead_id?: unknown }).lead_id)
+     .filter((id): id is string => typeof id === "string" && !!id);
+   const todos = leadAtivo ? [...vinculados, leadAtivo] : vinculados;
+   // Sem duplicata: o vínculo e o ativo costumam ser o MESMO negócio, e uma
+   // lista com o id duas vezes faz o receptor somar dois sistemas do mesmo lead.
+   return todos.filter((id, i) => todos.indexOf(id) === i);
+ }
+
+ /** O negócio ativo do contato — pela MESMA régua do resto do produto.
  *
  * `resolveActiveLeadForContact` distingue três desfechos que um `limit(2)` não
  * distingue: roteou, `no_open_lead` e `ambiguous_open_leads`. Os dois últimos
@@ -1074,9 +1285,14 @@ async function leadAtivoDoContato(
 }
 
 async function alteraComRevisao(supabase:SB,ctx:HandlerCtx,id:string,revision:number,patch:Record<string,unknown>):Promise<Record<string,unknown>> {
-  const {data,error}=await supabase.rpc("fn_appointment_change",{p_org:ctx.organization_id,p_id:id,p_revision:revision,p_patch:patch});
-  if(error) throw new ApiError(error.code === "40001" ? 409 : error.code === "42501" ? 403 : error.code === "P0002" ? 404 : 422,
-    error.code === "40001" ? "conflict" : error.code === "42501" ? "forbidden" : error.code === "P0002" ? "not_found" : "validation_failed",undefined,ctx.requestId,
-    error.code === "40001" ? "Este compromisso mudou. Atualize os dados antes de confirmar novamente." : "Não foi possível alterar este compromisso. Confira a presença, o horário e a mensagem vinculada.");
-  return data as Record<string,unknown>;
+  await guardServiceEffect();
+  const execution = execucaoDoServico();
+  const {data,error}=await supabase.rpc("fn_appointment_change",{p_org:ctx.organization_id,p_id:id,p_revision:revision,p_patch:{...patch,...(execution ? {_service_execution:execution} : {})}});
+  // Preserve upstream PT409 and the backward-compatible 40001 conflict mapping.
+  const conflito=error?.code === "PT409" || error?.code === "40001";
+  if(error) throw new ApiError(conflito ? 409 : error.code === "42501" ? 403 : error.code === "P0002" ? 404 : 422,
+    conflito ? "conflict" : error.code === "42501" ? "forbidden" : error.code === "P0002" ? "not_found" : "validation_failed",undefined,ctx.requestId,
+    conflito ? "Este compromisso mudou. Atualize os dados antes de confirmar novamente." : error.message.includes("service_human_confirmation_required") ? "A confirmação deste serviço depende da equipe. A reserva continua aguardando." : "Não foi possível alterar este compromisso. Confira a presença, o horário e a mensagem vinculada.");
+  const row = data as Record<string,unknown>;
+  return row.service_occurrence_id ? reciboDoServico(row) : row;
 }

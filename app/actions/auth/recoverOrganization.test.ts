@@ -29,6 +29,7 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAuth, resolveActiveOrg } from "@/lib/auth/server";
 import { ensureTenantForUser } from "@/lib/auth/provision";
 import { modoDeCadastro } from "@/lib/auth/politica-de-cadastro";
+import { createRegistrationRequest, estadoDoPedido } from "@/lib/auth/registration-requests";
 
 vi.mock("next/headers", () => ({ headers: vi.fn() }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -45,6 +46,10 @@ vi.mock("@/lib/auth/provision", () => ({ ensureTenantForUser: vi.fn() }));
 vi.mock("@/lib/auth/politica-de-cadastro", () => ({
   modoDeCadastro: vi.fn(async () => "aberto"),
 }));
+vi.mock("@/lib/auth/registration-requests", () => ({
+  createRegistrationRequest: vi.fn(async () => ({ created: true, id: "pedido-1" })),
+  estadoDoPedido: vi.fn(async () => null),
+}));
 vi.mock("@/lib/audit", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   audit: vi.fn(async () => undefined),
@@ -52,11 +57,13 @@ vi.mock("@/lib/audit", async (orig) => ({
 
 const USUARIO = { id: "11111111-1111-4111-8111-111111111111", email: "dono@exemplo.com.br" };
 
+const atualizarConta = vi.fn(async (_: unknown) => ({ error: null }));
 function comUsuario(user_metadata: Record<string, unknown> = {}) {
   vi.mocked(createClient).mockResolvedValue({
-    auth: { getUser: vi.fn(async () => ({ data: { user: { ...USUARIO, user_metadata } } })) },
+    auth: { getUser: vi.fn(async () => ({ data: { user: { ...USUARIO, user_metadata } } })), updateUser: atualizarConta },
   } as never);
 }
+const PLANO = "33333333-3333-4333-8333-333333333333";
 
 describe("recoverOrganization", () => {
   beforeEach(() => {
@@ -153,6 +160,30 @@ describe("recoverOrganization", () => {
     ).toBeLessThanOrEqual(3);
   });
 
+  it("⭐ #2846 o plano escolhido nesta tela vence o que a conta trazia, e chega ao provisionamento", async () => {
+    comUsuario({ org_name: "Velho", cobranca_plan_id: "44444444-4444-4444-8444-444444444444" });
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista", PLANO)).rejects.toThrow("NEXT_REDIRECT:/onboarding/welcome");
+    expect(vi.mocked(ensureTenantForUser).mock.calls[0]![0].user_metadata).toMatchObject({
+      org_name: "Clínica Boa Vista", cobranca_plan_id: PLANO,
+    });
+  });
+
+  it("⭐ #2846 o gatilho recusa por falta de plano: a tela diz para escolher um, em vez de 'tente de novo'", async () => {
+    vi.mocked(ensureTenantForUser).mockRejectedValue(new Error("signup provisioning: org insert failed: plano_obrigatorio"));
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista")).resolves.toEqual({ ok: false, error: "plano_obrigatorio" });
+  });
+
+  it("plano que não é uuid para antes de qualquer escrita", async () => {
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista", "1 or 1=1")).resolves.toEqual({ ok: false, error: "validation_error" });
+    expect(ensureTenantForUser).not.toHaveBeenCalled();
+  });
+
   it("provisionamento que levanta vira erro tratado, não tela branca", async () => {
     vi.mocked(ensureTenantForUser).mockRejectedValue(new Error("banco fora do ar"));
     const { recoverOrganization } = await import("./recoverOrganization");
@@ -244,5 +275,90 @@ describe("recoverOrganization — instalação que só aceita convidados", () =>
     );
 
     expect(ensureTenantForUser).toHaveBeenCalled();
+  });
+});
+
+/**
+ * CADASTRO COM APROVAÇÃO (migration 0383, recorte do PR #714 de @betoarts).
+ *
+ * Esta action é a ÚNICA porta que cria o pedido: `/auth/confirm` e
+ * `/auth/callback` mandam para `/get-started` em vez de provisionar. Então é
+ * aqui que "a empresa nasce só na aprovação" se prova — e o controle do modo
+ * `aberto` prova que, com a chave desligada, nada mudou.
+ */
+describe("recoverOrganization — instalação com aprovação", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.mocked(headers).mockResolvedValue({
+      get: (k: string) => (k === "x-forwarded-for" ? "203.0.113.44" : null),
+    } as never);
+    vi.mocked(requireAuth).mockResolvedValue({ id: USUARIO.id } as never);
+    vi.mocked(resolveActiveOrg).mockResolvedValue(null);
+    vi.mocked(ensureTenantForUser).mockResolvedValue({
+      provisioned: true,
+      organizationId: "22222222-2222-4222-8222-222222222222",
+    } as never);
+    vi.mocked(createRegistrationRequest).mockResolvedValue({ created: true, id: "pedido-1" });
+    vi.mocked(estadoDoPedido).mockResolvedValue(null);
+    comUsuario();
+  });
+
+  it("⭐ o pedido entra PENDENTE e a empresa não nasce", async () => {
+    vi.mocked(modoDeCadastro).mockResolvedValue("com_aprovacao");
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    // Volta para a própria tela, que passa a mostrar "Pedido enviado".
+    await expect(recoverOrganization("Clínica Boa Vista")).rejects.toThrow(
+      "NEXT_REDIRECT:/get-started",
+    );
+    expect(createRegistrationRequest).toHaveBeenCalledWith(USUARIO.id, "Clínica Boa Vista");
+    expect(ensureTenantForUser, "a empresa nasceu sem aprovação").not.toHaveBeenCalled();
+  });
+
+  it("⭐ #2846 o plano escolhido fica na CONTA, que é de onde a aprovação o lê", async () => {
+    vi.mocked(modoDeCadastro).mockResolvedValue("com_aprovacao");
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista", PLANO)).rejects.toThrow("NEXT_REDIRECT:/get-started");
+    expect(atualizarConta).toHaveBeenCalledWith({ data: { cobranca_plan_id: PLANO } });
+    expect(createRegistrationRequest).toHaveBeenCalled();
+  });
+
+  it("⭐ recusa é final: pedir de novo não enfileira outro pedido", async () => {
+    vi.mocked(modoDeCadastro).mockResolvedValue("com_aprovacao");
+    vi.mocked(estadoDoPedido).mockResolvedValue("rejected");
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista")).resolves.toEqual({
+      ok: false,
+      error: "pedido_recusado",
+    });
+    expect(createRegistrationRequest).not.toHaveBeenCalled();
+    expect(ensureTenantForUser).not.toHaveBeenCalled();
+  });
+
+  it("quem tem convite continua sem poder pedir empresa própria", async () => {
+    vi.mocked(modoDeCadastro).mockResolvedValue("com_aprovacao");
+    comUsuario({ invite_token: "token-que-nao-decodifica" });
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Empresa Nova")).resolves.toEqual({
+      ok: false,
+      error: "invite_pending",
+    });
+    expect(createRegistrationRequest).not.toHaveBeenCalled();
+  });
+
+  it("CONTROLE — chave desligada: provisiona como antes e não toca na fila", async () => {
+    vi.mocked(modoDeCadastro).mockResolvedValue("aberto");
+    const { recoverOrganization } = await import("./recoverOrganization");
+
+    await expect(recoverOrganization("Clínica Boa Vista")).rejects.toThrow(
+      "NEXT_REDIRECT:/onboarding/welcome",
+    );
+    expect(ensureTenantForUser).toHaveBeenCalledTimes(1);
+    expect(createRegistrationRequest).not.toHaveBeenCalled();
+    expect(estadoDoPedido).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 
 /**
  * QUEM SÓ LÊ NÃO RECEBE OS GESTOS DE ESCRITA DA AGENDA (PR #1013).
@@ -76,7 +76,7 @@ async function entrar(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: ESPERA });
 }
 
@@ -94,7 +94,7 @@ test("quem só lê abre a Agenda e não encontra nenhuma porta de escrita", asyn
   // Sem esta asserção, um 403 na página inteira faria as contagens abaixo darem
   // zero e a spec passaria medindo a tela errada.
   await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: ESPERA });
-  await expect(page.getByRole("heading", { name: "Agenda", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agendamentos", exact: true })).toBeVisible();
 
   // PRIMEIRA PORTA — o botão do cabeçalho.
   await expect(
@@ -143,7 +143,7 @@ test("o atendente abre a MESMA tela e as portas estão lá — o controle do cas
   await page.goto("/app/agenda");
 
   await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: ESPERA });
-  await expect(page.getByRole("heading", { name: "Agenda", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Agendamentos", exact: true })).toBeVisible();
 
   await expect(
     page.getByTestId("novo-agendamento"),

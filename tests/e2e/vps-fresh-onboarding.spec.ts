@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 import { PROVEDOR_POR_ID } from "@/lib/ai/pontos/provedores";
@@ -25,7 +25,7 @@ import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 const OWNER_EMAIL = "dono@qa.local";
 const OWNER_PASSWORD = "QaVps!2026#Dono";
 const OWNER_STATE_PATH = path.join(process.cwd(), ".e2e-owner.json");
-const EVIDENCE_DIR = path.join(process.cwd(), ".superpowers/evidence/vps-qa");
+const EVIDENCE_DIR = path.join(process.cwd(), "evidence/vps-qa");
 
 const svc = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -97,7 +97,7 @@ async function login(page: Page, password = OWNER_PASSWORD): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(OWNER_EMAIL);
   await page.locator("#password").fill(password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
 }
 
 test.describe.configure({ mode: "serial", timeout: 120_000 });
@@ -177,6 +177,21 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
 
     // J1.4 — preenche e avança
     await page.locator("#display_name").fill("Loja QA VPS");
+    await page.locator("#timezone").click();
+    // A tradução substitui o Text original, mas o portal do Select ainda precisa desmontar.
+    await page.locator("#timezone").evaluate((gatilho) => {
+      const walker = document.createTreeWalker(gatilho, NodeFilter.SHOW_TEXT);
+      const texto = walker.nextNode();
+      if (!texto?.parentNode) throw new Error("O fuso selecionado não tem texto");
+      const traduzido = document.createElement("font");
+      traduzido.textContent = texto.textContent;
+      texto.parentNode.replaceChild(traduzido, texto);
+    });
+    await page.getByRole("option", { name: "Los Angeles", exact: true }).click();
+    await expect(page.locator('input[name="timezone"]')).toHaveValue("America/Los_Angeles");
+    await page.locator("#timezone").click();
+    await page.getByRole("option", { name: "São Paulo, Rio, Brasília, Sul e Sudeste", exact: true }).click();
+    await expect(page.locator('input[name="timezone"]')).toHaveValue("America/Sao_Paulo");
     await page.locator('input[type="checkbox"]').check();
     await expect(continuar).toBeEnabled();
     await continuar.click();

@@ -64,7 +64,7 @@ const TETOS: Record<string, { minutos: number; razao: string }> = {
   "ci.yml::verify-parte": {
     minutos: 15,
     razao:
-      "a suíte foi repartida em partes (#1185 via #1190); cada parte roda metade de uma suíte " +
+      "a suíte foi repartida em partes (#1185 via #1190; três de unit desde 22/09/2026, e uma quarta só de cercas+kit desde 08/10/2026); cada parte roda uma fatia de uma suíte " +
       "que custava 649s de unit num verde. 15 é guarda de travamento; quem denuncia crescimento " +
       "é o passo `Orçamento de tempo do verify-parte` (12 min por parte, medido em 19/09)",
   },
@@ -98,10 +98,10 @@ const TETOS: Record<string, { minutos: number; razao: string }> = {
  * nova (partes/matrix) e continuava passando antes deste mapa.
  */
 const ORCAMENTOS: Record<string, { minutos: number; razao: string }> = {
-  // UMA entrada cobre as DUAS partes: o `ORCAMENTO_MIN` vive no `env:` de um
-  // passo único dentro da `matrix`, então as duas partes leem o mesmo número.
+  // UMA entrada cobre TODAS as partes: o `ORCAMENTO_MIN` vive no `env:` de um
+  // passo único dentro da `matrix`, então as partes leem o mesmo número.
   // Que o passo não fique preso a uma delas é o que o caso
-  // "o orçamento vale para as DUAS partes" abaixo guarda.
+  // "o orçamento vale para TODAS as partes" abaixo guarda.
   "ci.yml::verify-parte": {
     minutos: 12,
     razao:
@@ -248,9 +248,9 @@ describe("o preâmbulo do CI não come o orçamento dos testes", () => {
     }
   });
 
-  it("o orçamento vale para as DUAS partes da matrix, não só para uma", () => {
-    // `verify-parte` é uma `matrix` de 2, e o `ORCAMENTO_MIN` vive num passo
-    // ÚNICO que as duas partes executam. Os passos vizinhos (`Cercas`,
+  it("o orçamento vale para TODAS as partes da matrix, não só para uma", () => {
+    // `verify-parte` é uma `matrix` (7 partes desde 23/10/2026), e o
+    // `ORCAMENTO_MIN` vive num passo ÚNICO que todas as partes executam. Os passos vizinhos (`Cercas`,
     // `Typecheck`, `Lint`, `Kit self-host`) são todos `if: matrix.parte == N` —
     // então pôr um `if:` de parte neste aqui é uma edição de uma linha, natural
     // de fazer por simetria, e deixaria metade da suíte sem detector nenhum.
@@ -299,6 +299,56 @@ describe("o preâmbulo do CI não come o orçamento dos testes", () => {
           "orçamento rodar, e o vermelho volta a chegar como `cancelled`.",
       ).toBeLessThan(teto!);
     }
+  });
+
+  it("a divisão do verify cobre cada arquivo uma vez: --shard e `if:` batem com a matrix", () => {
+    // Mexer na divisão (reequilibrar passos, criar a parte 3) tem dois erros
+    // VERDES: `--shard=N/3` com matrix [1, 2] deixa um terço da suíte sem rodar,
+    // e `if: matrix.parte == 3` com matrix [1, 2] deixa o passo sem parte.
+    // Desde 08/10/2026 há parte SEM unit (a última — 4 até 23/10/2026, hoje 7: cercas + kit), excluída por
+    // `if: matrix.parte != 7` no passo de unit — então o N do shard é o número de
+    // partes que RODAM unit, não o tamanho da matrix. Os dois erros verdes novos:
+    // tirar a exclusão (a parte 7 roda `--shard=7/6`, que o vitest recusa ou
+    // duplica) e excluir uma parte do meio (um sexto da suíte sem rodar).
+    // Que o `--shard` do vitest corta em fatias disjuntas que somam tudo foi
+    // provado com o sequenciador dele no PR que moveu o lint (1108 = 554 + 554).
+    const texto = readFileSync(join(DIR_WORKFLOWS, "ci.yml"), "utf8");
+    const inicio = texto.indexOf("\n  verify-parte:\n");
+    expect(inicio, "o job verify-parte sumiu do ci.yml — esta guarda cegou").toBeGreaterThan(-1);
+    const resto = texto.slice(inicio + 1);
+    const fim = resto.slice(1).search(/\n {2}[\w-]+:\n/);
+    const job = (fim === -1 ? resto : resto.slice(0, fim + 1))
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("#"))
+      .join("\n");
+
+    const partes = job.match(/^\s+parte: \[([\d, ]+)\]\s*$/m)?.[1]?.split(",").map(Number);
+    expect(partes, "a matrix `parte: [...]` não foi encontrada").toBeDefined();
+    expect(partes, "as partes têm de ser 1..N, sem buraco").toEqual(partes!.map((_, i) => i + 1));
+
+    // As partes que rodam unit: a matrix MENOS as que o `if:` do passo de unit exclui.
+    const passoUnit = job.match(/^\s+- name: Unit tests[^\n]*\n((?:(?!\s+- (?:name|uses):)[^\n]*\n)*)/m)?.[1];
+    expect(passoUnit, "o passo `Unit tests` não foi encontrado — esta guarda cegou").toBeDefined();
+    const condicaoUnit = passoUnit!.match(/^\s+if: (.*)$/m)?.[1] ?? "";
+    const excluidas = [...condicaoUnit.matchAll(/matrix\.parte != (\d+)/g)].map((m) => Number(m[1]));
+    expect(
+      condicaoUnit.replace(/\s*matrix\.parte != \d+\s*(&&\s*)?/g, "").trim(),
+      "o `if:` do passo de unit só pode EXCLUIR partes (`matrix.parte != N`): outra condição o pula sem a conta abaixo ver",
+    ).toBe("");
+    const comUnit = partes!.filter((n) => !excluidas.includes(n));
+    expect(
+      comUnit,
+      "as partes que rodam unit têm de ser 1..N: `--shard=${{ matrix.parte }}/N` só cobre a suíte se a parte for o índice do shard",
+    ).toEqual(comUnit.map((_, i) => i + 1));
+
+    const shards = [...job.matchAll(/--shard=\$\{\{ matrix\.parte \}\}\/(\d+)/g)].map((m) => Number(m[1]));
+    expect(shards, "o passo de unit tem de recortar com --shard=${{ matrix.parte }}/N, N = partes que rodam unit").toEqual([
+      comUnit.length,
+    ]);
+
+    const alvos = [...job.matchAll(/matrix\.parte [!=]= (\d+)/g)].map((m) => Number(m[1]));
+    expect(alvos.length, "nenhum `if: matrix.parte == N` — o regex cegou").toBeGreaterThan(0);
+    expect(alvos.filter((n) => !partes!.includes(n)), "passo preso a uma parte que não existe").toEqual([]);
   });
 
   it("a action preparada tira o registry npm do caminho crítico", () => {

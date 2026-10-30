@@ -40,7 +40,7 @@ function bancoQue(...respostas: Resposta[]) {
   const upsert = vi.fn(async () => ({ error: null }));
   vi.mocked(createAdminClient).mockReturnValue({
     from: () => ({
-      select: () => ({ eq: () => ({ maybeSingle }) }),
+      select: () => ({ eq: () => ({ abortSignal: () => ({ maybeSingle }) }) }),
       upsert,
     }),
   } as never);
@@ -72,6 +72,15 @@ describe("modoDeCadastro", () => {
   it("lê 'so_convite' quando é o que está gravado", async () => {
     bancoQue(ok("so_convite"));
     await expect(modoDeCadastro()).resolves.toBe("so_convite");
+  });
+
+  it("lê 'com_aprovacao' (migration 0383), e ele também é pegajoso num soluço do banco", async () => {
+    // Uma instalação que exige aprovação não pode voltar a abrir empresa na
+    // hora porque o banco parou de responder por um instante.
+    bancoQue(ok("com_aprovacao"), falha("57P01"));
+    await expect(modoDeCadastro()).resolves.toBe("com_aprovacao");
+    invalidarModoDeCadastro();
+    await expect(modoDeCadastro()).resolves.toBe("com_aprovacao");
   });
 
   it("tabela inexistente (42P01) vale 'aberto': quem não aplicou a migration não é fechado", async () => {

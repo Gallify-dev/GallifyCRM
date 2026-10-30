@@ -4,8 +4,9 @@ import path from "node:path";
 import { selecionarCercas } from "./vitest.cercas";
 
 // As guardas estruturais — o arquivo de teste que só lê o repositório (baseline
-// × cadeia, MANIFEST, varredura de anon, docs, workflows) e não importa código
-// do produto. Quem entra é decidido pelo import, em vitest.cercas.ts.
+// × cadeia, MANIFEST, varredura de anon, docs, workflows, i18n, fragmentos) e
+// não toca DOM; código do produto, só módulo puro. Quem entra é decidido pelo
+// import, em vitest.cercas.ts.
 const CERCAS = selecionarCercas(__dirname);
 
 export default defineConfig({
@@ -36,6 +37,7 @@ export default defineConfig({
       ".claude/**",
       "tests/e2e/**",
       "tests/invariants/**",
+      "tests/mysql/**",
       "tests/journeys/**",
       // Bancada opcional: usa node:test, PostgreSQL próprio e Playwright com
       // configuração dedicada. Não depende do ambiente da suíte do produto.

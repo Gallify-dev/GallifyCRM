@@ -90,6 +90,11 @@ export const MOTIVOS_DA_PASSAGEM = [
   "legal_mention",
   "refund_mention",
   "caso_escalado",
+  // Um fluxo DETERMINÍSTICO coletou dados (campo a campo) e passou para
+  // verificação humana. Distinto de `requested_human` porque o cliente NÃO
+  // pediu uma pessoa — mentir no rótulo faria quem assume abrir com um
+  // agradecimento que ninguém pediu. Par da migration 0693.
+  "verificacao_manual",
 ] as const;
 export type MotivoDaPassagem = (typeof MOTIVOS_DA_PASSAGEM)[number];
 
@@ -134,7 +139,23 @@ export const FRASE_DO_MOTIVO = {
   legal_mention: "A conversa tocou em assunto jurídico",
   refund_mention: "A conversa tocou em reembolso",
   caso_escalado: "Uma pessoa da equipe escalou um atendimento",
+  verificacao_manual: "Um fluxo automático coletou dados e passou a conversa para verificação humana",
 } satisfies Record<MotivoDaPassagem, string>;
+
+/**
+ * Quem percebeu a irritação foi o Jev (D11). Entra só no que a EQUIPE lê — o
+ * resumo da passagem e o aviso da Central —, nunca no que vai para o cliente: é
+ * o momento do dia a dia em que o Jev aparece trabalhando.
+ */
+export const MARCA_DO_JEV = "(percebido pelo Jev)";
+
+/**
+ * A frase do motivo com a marca, exatamente como o briefing a grava no `body`
+ * da passagem (`briefing-da-passagem.ts`). É por ela que o cartão do Inbox sabe
+ * que foi o Jev — a passagem não tem coluna para o motor.
+ * ponytail: derivado do texto gravado; se o motor ganhar coluna, o cartão lê de lá.
+ */
+export const MOTIVO_PERCEBIDO_PELO_JEV = `${FRASE_DO_MOTIVO.low_sentiment} ${MARCA_DO_JEV}`;
 
 /** A frase em português de cada motivo de o cliente NÃO ter sido avisado. */
 export const FRASE_DO_MOTIVO_DO_AVISO = {
@@ -411,10 +432,15 @@ export async function registrarPassagem(
  * aviso-como-veio` guarda), então ele não passa por `t()` na renderização.
  */
 export function corpoCurtoDoAviso(
-  entrada: { motivoCodigo: MotivoDaPassagem; aviso?: DesfechoDoAvisoDaPassagem | null },
+  entrada: {
+    motivoCodigo: MotivoDaPassagem;
+    aviso?: DesfechoDoAvisoDaPassagem | null;
+    percebidoPeloJev?: boolean;
+  },
   traduzirTexto: (texto: string) => string,
 ): string {
-  const partes = [traduzirTexto(FRASE_DO_MOTIVO[entrada.motivoCodigo])];
+  const motivo = traduzirTexto(FRASE_DO_MOTIVO[entrada.motivoCodigo]);
+  const partes = [entrada.percebidoPeloJev === true ? `${motivo} ${traduzirTexto(MARCA_DO_JEV)}` : motivo];
   const linha = linhaDoAvisoAoCliente(entrada.aviso, traduzirTexto);
   if (linha !== null) partes.push(linha);
   partes.push(traduzirTexto("Abra a conversa para ver o contexto."));
@@ -449,16 +475,32 @@ export function linhaDoAvisoAoCliente(
 
 /**
  * O texto livre que um agente externo mandou como `reason` vira um código do
- * nosso vocabulário quando corresponde a um; senão, `requested_human`.
+ * nosso vocabulário quando corresponde a um; senão, `low_confidence`.
  *
  * O texto NÃO se perde: ele vai para `content`, que é redigível pela cascata de
  * LGPD. Antes desta entrega ele ia para `api_audit_log.metadata`, tabela sem
  * `UPDATE`/`DELETE` para papel nenhum — texto livre de fora, gravado onde
  * ninguém consegue apagar.
+ *
+ * ⚠️ **O fallback mudou de `requested_human` para `low_confidence` (#3310), e a
+ * razão é a que a issue mediu:** texto livre é, por definição, uma escalação do
+ * PRÓPRIO agente (não achou o card da viagem, não tem a informação, a regra do
+ * prompt manda passar). Traduzi-lo para `requested_human` fazia o cartão dizer
+ * "O cliente pediu para falar com uma pessoa" — e o lead recebia a abertura da
+ * variante `pediu_humano` — para um cliente que só perguntou do check-in.
+ * `low_confidence` é o motivo do vocabulário fechado que descreve o que houve
+ * ("o assistente não resolveu sozinho") SEM afirmar nada sobre o cliente; quem
+ * de fato pediu uma pessoa continua vindo com o código explícito
+ * (`requested_human`), e é ele que recebe a frase certa.
+ *
+ * Por que não um código novo: `passagens_de_atendimento.motivo_codigo` é
+ * vocabulário FECHADO por CHECK, e um valor novo sem a migration do par
+ * (`tests/invariants/vocabulario-banco-x-typescript.test.ts`) viraria `23514`
+ * no caminho que existe justamente para o caso raro.
  */
 export function motivoCodigoDoTexto(texto: string | null | undefined): MotivoDaPassagem {
   const bruto = (texto ?? "").trim();
   return (MOTIVOS_DA_PASSAGEM as readonly string[]).includes(bruto)
     ? (bruto as MotivoDaPassagem)
-    : "requested_human";
+    : "low_confidence";
 }

@@ -46,9 +46,16 @@ export {
   Dot,
   // actions
   ArrowBendUpLeft,
+  // encaminhar (#2835): a seta espelhada do "Responder" — mesma família,
+  // mesmo peso, para os dois gestos da bolha lerem como par.
+  ArrowBendUpRight,
+  // videochamada (#2440): ícone de câmera, não Video (que no Phosphor é a
+  // janela de player) — junto do Phone do DialButton, a família é a mesma.
+  VideoCamera,
   List,
   Bell,
   BellSlash,
+  DeviceMobile,
   EnvelopeSimple,
   PaperPlaneTilt,
   Smiley,
@@ -78,6 +85,7 @@ export {
   // lgpd
   Scales as ScalesSimple,
   Eye,
+  EyeSlash,
   ChartBar,
   ClockCountdown,
   // painéis de evolução / aprendizado
@@ -105,6 +113,7 @@ export {
   Note,
   FileText,
   Lock,
+  LockOpen,
   Receipt,
   Tag,
   Question,
@@ -113,6 +122,8 @@ export {
   GitBranch,
   Flag,
   TreeStructure,
+  // reordenar por arrastar e soltar (#3244): a alça da lista de respostas rápidas
+  DotsSixVertical as DragHandle,
   // misc
   DotsThree,
   CaretDown,
@@ -146,4 +157,6 @@ export {
   GoogleLogo,
   MapPin,
   ArrowsOutSimple,
+  // /admin/modulos: módulo opcional com tabela própria (ADR-0002)
+  Stack,
 } from "@phosphor-icons/react/dist/ssr";

@@ -35,8 +35,11 @@
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createClient } from "@supabase/supabase-js";
 
-import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
+import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
+
+import { test, expect, type Page, type APIRequestContext } from "./helpers/test";
 
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -82,7 +85,7 @@ async function login(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app\//);
 }
 
@@ -90,7 +93,7 @@ async function loginWithTotp(page: Page, email: string, secret: string): Promise
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/login\/mfa/);
 
   // Até 2 tentativas: um código pode expirar na borda da janela de 30s.
@@ -240,7 +243,7 @@ test("quem pula versões vê os avisos de TODAS elas, não só o da mais nova", 
   await expect(recolhido).toHaveJSProperty("open", true);
   await expect(page.getByText(/Conserto da versão do meio/)).toBeVisible();
 
-  await page.screenshot({ path: ".superpowers/evidence/faixa-de-versoes.png" });
+  await page.screenshot({ path: "evidence/faixa-de-versoes.png" });
 });
 
 test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page, request }) => {
@@ -259,7 +262,7 @@ test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page,
   await expect(page.getByRole("heading", { name: /versão 1\.1\.0 disponível/i })).toBeVisible();
   await expect(page.getByText(/Reconecte o número depois/)).toBeVisible();
   await expect(page.getByText(/Botão de atualizar pela tela/)).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/task9-1-tem-novidade.png" });
+  await page.screenshot({ path: "evidence/task9-1-tem-novidade.png" });
 
   // O bloco de atenção precisa vir ANTES do botão na ordem visual — medido
   // por ferramenta (boundingBox), nunca a olho: quem precisa agir à mão (ex.:
@@ -285,7 +288,7 @@ test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page,
   ).toBeVisible();
   await expect(page.getByText(/ficar parada nesse tempo é normal/i)).toBeVisible();
   await expect(page.getByTestId("espera-decorrida")).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/task9-2a-pedido-enviado.png" });
+  await page.screenshot({ path: "evidence/task9-2a-pedido-enviado.png" });
 
   // O agente do host detecta o pedido no próximo heartbeat...
   const { data } = await heartbeat(request, { latest_version: "1.1.0" });
@@ -306,7 +309,7 @@ test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page,
   await expect(page.getByText(/Guardando uma cópia de segurança/)).toBeVisible({
     timeout: 20_000,
   });
-  await page.screenshot({ path: ".superpowers/evidence/task9-2b-atualizando.png" });
+  await page.screenshot({ path: "evidence/task9-2b-atualizando.png" });
 
   // ...executa (fora deste teste — é o `agent.sh`/`update.sh` reais, provados
   // na task 8) e reporta o desfecho.
@@ -331,14 +334,14 @@ test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page,
   ).toBeVisible();
   await expect(page.getByText(/a última versão que ele confirmou é a 1\.0\.0/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /atualizar agora/i })).toHaveCount(0);
-  await page.screenshot({ path: ".superpowers/evidence/task9-3a-acabou-de-atualizar.png" });
+  await page.screenshot({ path: "evidence/task9-3a-acabou-de-atualizar.png" });
 
   // E quando o host finalmente confirma, a janela se fecha sozinha: volta o
   // texto normal de quem está em dia, sem ninguém limpar estado nenhum.
   await heartbeat(request, { current_version: "1.1.0", latest_version: "1.1.0" });
   await page.reload();
   await expect(page.getByRole("heading", { name: /^você está na versão 1\.1\.0/i })).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/task9-3b-em-dia.png" });
+  await page.screenshot({ path: "evidence/task9-3b-em-dia.png" });
 });
 
 test("quando a atualização falha, a tela nomeia a versão certa, mostra o log e dá saída", async ({
@@ -403,7 +406,7 @@ test("quando a atualização falha, a tela nomeia a versão certa, mostra o log 
   await expect(
     page.getByText("bash hostgator-setup-kit/update.sh --to v1.0.0 --force"),
   ).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-1-falha-com-rollback.png" });
+  await page.screenshot({ path: "evidence/final-1-falha-com-rollback.png" });
 
   // ── Falha SEM rollback: a tela não pode prometer que voltou ────────────────
   resetEstado();
@@ -427,7 +430,7 @@ test("quando a atualização falha, a tela nomeia a versão certa, mostra o log 
   await expect(
     page.getByText("bash hostgator-setup-kit/update.sh --to v1.1.0 --force"),
   ).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-2-falha-sem-rollback.png" });
+  await page.screenshot({ path: "evidence/final-2-falha-sem-rollback.png" });
 
   // ── Sem nenhum passo reportado, a saída NÃO pode sumir ────────────────────
   // `run_progress` não tem retry e engole falha; `run_result` insiste por ~2
@@ -459,7 +462,7 @@ test("quando a atualização falha, a tela nomeia a versão certa, mostra o log 
   ).toBeVisible();
   await page.getByText(/Detalhes técnicos/).click();
   await expect(page.getByText(/é ANTERIOR à que já está instalada/)).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-4-sem-passo-reportado.png" });
+  await page.screenshot({ path: "evidence/final-4-sem-passo-reportado.png" });
 
   // ── A falha que já foi SUPERADA por outro caminho solta a tela ────────────
   //
@@ -484,7 +487,74 @@ test("quando a atualização falha, a tela nomeia a versão certa, mostra o log 
     "a tela repetiu uma falha que o servidor já superou",
   ).toHaveCount(0);
   await expect(page.getByRole("button", { name: /atualizar agora/i })).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-5-falha-superada.png" });
+  await page.screenshot({ path: "evidence/final-5-falha-superada.png" });
+});
+
+test("retrato antigo informa a última conferência sem antecipar o comando manual", async ({ page, request }, testInfo) => {
+  test.setTimeout(90_000);
+  // Só a idade é preparada no banco de teste: login, heartbeat, leitura da API
+  // e a tela continuam reais. Nenhum relógio do produto ou resposta é alterado.
+  const c = credenciaisSupabaseDeTeste();
+  expect(["127.0.0.1", "localhost"]).toContain(new URL(c.url).hostname);
+  const db = createClient(c.url, c.serviceRole, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const envelhecer = async (minutos: number): Promise<string> => {
+    const ultimaConferencia = new Date(Date.now() - minutos * 60_000).toISOString();
+    const { data, error } = await db.from("system_version")
+      .update({ agent_last_seen_at: ultimaConferencia })
+      .eq("id", 1).select("agent_last_seen_at").single();
+    expect(error).toBeNull();
+    expect(Date.parse(data!.agent_last_seen_at)).toBe(Date.parse(ultimaConferencia));
+    return ultimaConferencia;
+  };
+
+  resetEstado();
+  try {
+    await heartbeat(request, { current_version: "1.0.0", latest_version: "" });
+    await loginWithTotp(page, creds.users.dono!.email, creds.dono_totp!.secret);
+    await page.goto("/app/settings/atualizacao");
+    await expect(page.getByText("É a mais recente. Não há nada a fazer.")).toBeVisible();
+    await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toHaveCount(0);
+
+    const ultimaConferencia = await envelhecer(31);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Não sei se há versão nova" })).toBeVisible();
+    await expect(page.getByText("É a mais recente. Não há nada a fazer.")).toHaveCount(0);
+    await expect(page.getByText(/verifique a conexão do servidor com a internet/)).toBeVisible();
+    await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toHaveCount(0);
+    const hora = await page.evaluate((iso) => {
+      const d = new Date(iso);
+      return `${String(d.getHours()).padStart(2, "0")}h${String(d.getMinutes()).padStart(2, "0")}`;
+    }, ultimaConferencia);
+    await expect(page.getByText(hora, { exact: true })).toBeVisible();
+    await expect(page.getByText(/Versão instalada:.*1\.0\.0/)).toBeVisible();
+    const pastaDaEvidencia = path.join("evidence", "retrato-host-3504");
+    fs.mkdirSync(pastaDaEvidencia, { recursive: true });
+    await testInfo.attach("retrato-antigo", {
+      body: await page.screenshot({ path: path.join(pastaDaEvidencia, "retrato-antigo.png") }),
+      contentType: "image/png",
+    });
+
+    await heartbeat(request, { current_version: "1.0.0", latest_version: "1.1.0" });
+    await envelhecer(31);
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Atualizar agora", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Não sei se há versão nova" })).toHaveCount(0);
+    await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toHaveCount(0);
+
+    await envelhecer(25 * 60);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Atualização automática indisponível" })).toBeVisible();
+    await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toBeVisible();
+    await testInfo.attach("agente-offline", {
+      body: await page.screenshot({ path: path.join(pastaDaEvidencia, "agente-offline.png") }),
+      contentType: "image/png",
+    });
+  } finally {
+    // Não deixar a idade preparada para as outras jornadas desta instalação.
+    await heartbeat(request, { current_version: "1.0.0", latest_version: "" });
+  }
 });
 
 test("quando o host não conseguiu comparar, a tela não diz que está em dia", async ({
@@ -509,7 +579,7 @@ test("quando o host não conseguiu comparar, a tela não diz que está em dia", 
   await expect(page.getByText(/é a mais recente/i)).toHaveCount(0);
   await expect(page.getByText(/quer dizer que eu não sei/i)).toBeVisible();
   await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-5-nao-consegui-checar.png" });
+  await page.screenshot({ path: "evidence/final-5-nao-consegui-checar.png" });
 });
 
 test("instalação à frente da versão publicada não vira tela quebrada nem alarme", async ({
@@ -534,7 +604,7 @@ test("instalação à frente da versão publicada não vira tela quebrada nem al
   await expect(page.getByText(/não há nada a atualizar/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /atualizar agora/i })).toHaveCount(0);
   await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/final-3-a-frente-da-publicada.png" });
+  await page.screenshot({ path: "evidence/final-3-a-frente-da-publicada.png" });
 });
 
 test("fork sem nenhuma release publicada não afirma 'à frente' sem base", async ({ page, request }) => {
@@ -560,7 +630,7 @@ test("fork sem nenhuma release publicada não afirma 'à frente' sem base", asyn
   await expect(page.getByText(/não há nada a atualizar agora/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /atualizar agora/i })).toHaveCount(0);
   await expect(page.getByText("bash hostgator-setup-kit/update.sh")).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/minors-1-sem-release-publicada.png" });
+  await page.screenshot({ path: "evidence/minors-1-sem-release-publicada.png" });
 });
 
 test("quem não é dono do servidor não vê o botão", async ({ page, request }) => {
@@ -574,5 +644,5 @@ test("quem não é dono do servidor não vê o botão", async ({ page, request }
 
   await page.goto("/app/settings/atualizacao");
   await expect(page.getByText(/404 — Página não encontrada/i)).toBeVisible();
-  await page.screenshot({ path: ".superpowers/evidence/task9-4-nao-dono-404.png" });
+  await page.screenshot({ path: "evidence/task9-4-nao-dono-404.png" });
 });

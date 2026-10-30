@@ -7,6 +7,8 @@ import {
   montarBriefingDaPassagem,
   type EntradaDoBriefing,
 } from "@/lib/escalacao/briefing-da-passagem";
+import { corpoCurtoDoAviso, MARCA_DO_JEV } from "@/lib/escalacao/passagem";
+import { traduzir } from "@/lib/i18n/dicionario";
 
 /**
  * A MONTAGEM DO BRIEFING DA PASSAGEM É ÚNICA — E SEPARA A PALAVRA DO CLIENTE DA
@@ -267,5 +269,79 @@ describe("buildHandoffSummary — o adaptador não muda o caminho que já existi
     expect(buildHandoffSummary(CHECKPOINT)).toBe(
       montarBriefingDaPassagem({ checkpoint: CHECKPOINT }).body,
     );
+  });
+});
+
+describe("D11 — a equipe sabe quando foi o Jev que percebeu a irritação", () => {
+  const comJev = { codigo: "low_sentiment" as const, percebidoPeloJev: true };
+
+  it("o resumo da passagem e o aviso da Central ganham a marca", () => {
+    expect(montarBriefingDaPassagem({ checkpoint: null, motivo: comJev }).body).toContain(
+      `O cliente demonstrou irritação na conversa ${MARCA_DO_JEV}`,
+    );
+    expect(corpoCurtoDoAviso({ motivoCodigo: "low_sentiment", percebidoPeloJev: true }, (t) => t)).toContain(
+      `O cliente demonstrou irritação na conversa ${MARCA_DO_JEV}`,
+    );
+  });
+
+  it("sem o Jev, a frase fica exatamente como era (controle)", () => {
+    const b = montarBriefingDaPassagem({ checkpoint: null, motivo: { codigo: "low_sentiment" } });
+    expect(b.body).not.toContain("Jev");
+    expect(corpoCurtoDoAviso({ motivoCodigo: "low_sentiment" }, (t) => t)).not.toContain("Jev");
+  });
+
+  it("a marca chega traduzida ao aviso da Central de quem usa em espanhol", () => {
+    const corpo = corpoCurtoDoAviso({ motivoCodigo: "low_sentiment", percebidoPeloJev: true }, (t) =>
+      traduzir(t, "es"),
+    );
+    expect(corpo).not.toContain(MARCA_DO_JEV);
+    expect(corpo).toContain(traduzir(MARCA_DO_JEV, "es"));
+  });
+});
+
+describe("campos coletados — o dado determinístico que um fluxo recolheu", () => {
+  it("sem campos: o corpo é BYTE A BYTE o de antes (o caminho legado não muda)", () => {
+    const sem = montarBriefingDaPassagem({ checkpoint: CHECKPOINT, motivo: { codigo: "requested_human" } });
+    const comVazio = montarBriefingDaPassagem({
+      checkpoint: CHECKPOINT,
+      motivo: { codigo: "requested_human" },
+      camposColetados: {},
+    });
+    expect(comVazio.body).toBe(sem.body);
+  });
+
+  it("com campos: rótulo de verificação, um campo por linha, e o bloco vem ANTES do checkpoint", () => {
+    const b = montarBriefingDaPassagem({
+      checkpoint: CHECKPOINT,
+      camposColetados: { nome: "Maria", exame: "Hemograma" },
+    });
+    expect(b.body).toContain("Dados coletados automaticamente (confira antes de usar):");
+    expect(b.body).toContain("• nome: Maria");
+    expect(b.body).toContain("• exame: Hemograma");
+    expect(b.body.indexOf("Dados coletados")).toBeLessThan(b.body.indexOf("Contexto acumulado"));
+  });
+
+  it("sem título de outro lugar, os rótulos dos campos identificam o cartão na lista", () => {
+    const b = montarBriefingDaPassagem({ checkpoint: null, camposColetados: { nome: "Maria", exame: "Hemograma" } });
+    expect(b.title).toBe("Dados coletados: nome, exame");
+  });
+
+  it("campo em branco é descartado; valor aparado no teto (o cartão não vira página)", () => {
+    const b = montarBriefingDaPassagem({
+      checkpoint: null,
+      camposColetados: { "  ": "x", vazio: "   ", ok: "  valor  " },
+    });
+    expect(b.body).toContain("• ok: valor");
+    expect(b.body).not.toContain("vazio");
+    const grande = montarBriefingDaPassagem({ checkpoint: null, camposColetados: { k: "x".repeat(1000) } });
+    expect((grande.body.split("• k: ")[1] ?? "").length).toBe(400);
+  });
+
+  it("mais de 12 campos: só os 12 primeiros entram", () => {
+    const campos: Record<string, string> = {};
+    for (let i = 0; i < 15; i++) campos[`c${i}`] = "v";
+    const b = montarBriefingDaPassagem({ checkpoint: null, camposColetados: campos });
+    expect(b.body).toContain("• c11: v");
+    expect(b.body).not.toContain("• c12: v");
   });
 });

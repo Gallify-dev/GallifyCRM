@@ -12,6 +12,7 @@ import { copyToClipboard } from "@/lib/clipboard";
 import { useT } from "@/hooks/i18n/useT";
 import { ChannelAiAccess } from "./ChannelAiAccess";
 import { ParaIntegrar } from "./ParaIntegrar";
+import { RenomearConexao } from "./RenomearConexao";
 
 /**
  * Conectar um número por um PROVEDOR PARCEIRO.
@@ -158,6 +159,15 @@ export function CanalParceiroClient() {
         )}
 
         {estado?.channel_session_id && <ChannelAiAccess channelId={estado.channel_session_id} />}
+        {estado?.channel_session_id && (
+          <div>
+            <RenomearConexao
+              channelId={estado.channel_session_id}
+              currentName={estado.display_name}
+              onSaved={carregar}
+            />
+          </div>
+        )}
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="parceiro-conta">{t("Conta")}</Label>
@@ -221,6 +231,7 @@ export function CanalParceiroClient() {
           </div>
           <ParaColar rotulo={t("URL do webhook")} valor={recemConectado.webhook_url} />
           <ParaColar rotulo={t("Segredo (assinatura)")} valor={recemConectado.webhook_secret} />
+          <p className="text-xs text-muted-foreground">{t("Na inscrição do webhook no provedor, preencha o filtro de contas (accountIds) com a Conta deste número: assim só chegam aqui os eventos dele.")}</p>
           {recemConectado.quality_rating && (
             <p className="text-xs text-muted-foreground">
               {t("Qualidade do número segundo a plataforma:")} {recemConectado.quality_rating}
@@ -240,6 +251,7 @@ export function CanalParceiroClient() {
             </p>
           </div>
           <ParaColar rotulo={t("URL do webhook")} valor={estado.webhook_url} />
+          <p className="text-xs text-muted-foreground">{t("Na inscrição do webhook no provedor, preencha o filtro de contas (accountIds) com a Conta deste número: assim só chegam aqui os eventos dele.")}</p>
         </Card>
       )}
 
